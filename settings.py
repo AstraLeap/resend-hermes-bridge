@@ -8,10 +8,6 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 APP_DIR = Path(__file__).resolve().parent
-SEND_SECRET_PLACEHOLDERS = {
-    "change-me-generate-with-openssl-rand-hex-32",
-    "generate-with-openssl-rand-hex-32",
-}
 
 
 def load_project_env() -> None:
@@ -23,16 +19,6 @@ def require_env(name: str) -> str:
     if value is None or value.strip() == "":
         raise RuntimeError(f"Environment variable {name} is required but not set.")
     return value.strip()
-
-
-def require_secret_env(name: str) -> str:
-    value = require_env(name)
-    if value in SEND_SECRET_PLACEHOLDERS:
-        raise RuntimeError(
-            f"Environment variable {name} must be replaced with a generated secret. "
-            "Use: openssl rand -hex 32"
-        )
-    return value
 
 
 def hermes_send_bin() -> Path:
@@ -75,7 +61,6 @@ def validate_environment() -> list[str]:
     required = [
         "RESEND_API_KEY",
         "RESEND_WEBHOOK_SECRET",
-        "RESEND_BRIDGE_SEND_SECRET",
         "RESEND_DOMAIN",
         "BOT_FROM_LOCAL",
         "OWNER_FROM_LOCAL",
@@ -84,8 +69,6 @@ def validate_environment() -> list[str]:
         value = os.getenv(name, "").strip()
         if not value:
             errors.append(f"{name} is not set")
-        elif value in SEND_SECRET_PLACEHOLDERS:
-            errors.append(f"{name} is still a placeholder value")
 
     send_bin = hermes_send_bin()
     if not send_bin.exists():
@@ -100,7 +83,6 @@ def validate_environment() -> list[str]:
 class Settings:
     resend_api_key: str
     resend_webhook_secret: str
-    bridge_send_secret: str
     resend_domain: str
     bot_from_local: str
     owner_from_local: str
@@ -143,7 +125,6 @@ def load_settings() -> Settings:
     return Settings(
         resend_api_key=require_env("RESEND_API_KEY"),
         resend_webhook_secret=require_env("RESEND_WEBHOOK_SECRET"),
-        bridge_send_secret=require_secret_env("RESEND_BRIDGE_SEND_SECRET"),
         resend_domain=require_env("RESEND_DOMAIN").lower(),
         bot_from_local=require_env("BOT_FROM_LOCAL").lower(),
         owner_from_local=require_env("OWNER_FROM_LOCAL").lower(),

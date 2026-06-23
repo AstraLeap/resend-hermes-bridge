@@ -88,7 +88,6 @@ cp .env.example .env
 ```text
 RESEND_API_KEY=...
 RESEND_WEBHOOK_SECRET=...
-RESEND_BRIDGE_SEND_SECRET=...
 RESEND_DOMAIN=example.com
 BOT_FROM_LOCAL=bot
 OWNER_FROM_LOCAL=mail
@@ -96,12 +95,6 @@ AI_NAME=Hermes
 ```
 
 通知渠道通过 `NOTIFICATION_TARGET` 设置，例如 `telegram`、`weixin`、`qqbot`、`wecom`、`discord`、`slack`、`signal`。对应平台的凭证在 Hermes（`~/.hermes/.env`）中配置，桥接层直接调用本机 Hermes 的 `hermes send --to <target>`。
-
-桥接层发送密钥请自行生成：
-
-```sh
-openssl rand -hex 32
-```
 
 机器人地址由 `BOT_FROM_LOCAL` 和 `RESEND_DOMAIN` 组合而成。例如 `BOT_FROM_LOCAL=bot`、`RESEND_DOMAIN=example.com` 对应 `bot@example.com`。
 
@@ -114,7 +107,7 @@ openssl rand -hex 32
 
 因此本机必须已经安装并配置好 Hermes CLI，且 `hermes` 在 `PATH`、`~/.local/bin` 或 `/usr/local/bin` 中可用。如果 Hermes 可执行文件不在这些位置，请设置 `HERMES_SEND_BIN`。
 
-桥接层不会把 bridge 自己的 `data/` 路径传给 Hermes。入站附件下载后会复制到 Hermes cache 下的 `resend-bridge/inbound/<email_id>/`，提示 Hermes 生成的文件保存到 `resend-bridge/generated/`。Hermes 对输入/输出附件的读写都发生在 `~/.hermes/cache/resend-bridge/` 子目录内。
+桥接层不会把 bridge 自己的 `data/` 路径传给 Hermes。入站附件下载后保留在桥接层运行时目录 `data/attachments/<email_id>/`，需要时直接以原始路径传给 Hermes。Hermes 生成的文件可保存到 `~/.hermes/cache/resend-bridge/generated/`。
 
 MCP 服务器可自动注册到 Hermes：
 
@@ -183,7 +176,6 @@ systemctl --user enable --now resend-hermes-bridge.service
 
 - 服务请绑定在 `127.0.0.1`；通过反向代理暴露公网，且只转发 Resend Webhook 路径。
 - `.env`、`state.db`、`attachments/` 及草稿文件请勿提交到 git。
-- `/send` 需要 `Authorization: Bearer <RESEND_BRIDGE_SEND_SECRET>`。
 - 手动发送需要先保存草稿并确认；没有已保存草稿的直接手动发送会被拒绝。
 - 机器人自动回复的附件仅限同一封 inbound 邮件下载的文件。
 

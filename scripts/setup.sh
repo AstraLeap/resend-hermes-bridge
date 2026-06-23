@@ -99,14 +99,6 @@ prompt "OWNER_FROM_LOCAL" "Owner inbox local part (e.g. mail)" "mail"
 prompt "AI_NAME" "Display name for owner notices" "Hermes"
 prompt "NOTIFICATION_TARGET" "Notification platform (telegram/weixin/qqbot/wecom/discord/slack/signal)" "telegram"
 
-# Generate bridge send secret if still placeholder
-bridge_secret="$(read_env_value "RESEND_BRIDGE_SEND_SECRET" "")"
-if [[ -z "$bridge_secret" ]] || [[ "$bridge_secret" == "change-me-generate-with-openssl-rand-hex-32" ]]; then
-    bridge_secret="$(openssl rand -hex 32 2>/dev/null || "$PYTHON_BIN" -c 'import secrets; print(secrets.token_hex(32))')"
-    set_env_value "RESEND_BRIDGE_SEND_SECRET" "$bridge_secret"
-    ok "Generated RESEND_BRIDGE_SEND_SECRET"
-fi
-
 # Check Hermes availability
 if command -v hermes >/dev/null 2>&1; then
     ok "Hermes CLI found: $(command -v hermes)"

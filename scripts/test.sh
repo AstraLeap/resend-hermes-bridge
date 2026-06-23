@@ -60,7 +60,6 @@ fi
 
 export RESEND_API_KEY=test
 export RESEND_WEBHOOK_SECRET=test
-export RESEND_BRIDGE_SEND_SECRET=test-send-secret
 export RESEND_DOMAIN=example.com
 export BOT_FROM_LOCAL=bot
 export OWNER_FROM_LOCAL=mail

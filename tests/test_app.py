@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 
 import app
 import manage
-import settings as bridge_settings
 
 
 class _DummyFastMCP:
@@ -87,16 +86,6 @@ def test_parse_task_decision_preserves_execution_fields():
 def test_exception_message_falls_back_to_exception_type():
     assert app.exception_message(TimeoutError()) == "TimeoutError"
     assert app.exception_message(RuntimeError("boom")) == "boom"
-
-
-def test_bridge_send_secret_rejects_example_placeholder(monkeypatch):
-    monkeypatch.setenv(
-        "RESEND_BRIDGE_SEND_SECRET",
-        "change-me-generate-with-openssl-rand-hex-32",
-    )
-
-    with pytest.raises(RuntimeError, match="openssl rand -hex 32"):
-        bridge_settings.require_secret_env("RESEND_BRIDGE_SEND_SECRET")
 
 
 def test_reply_payload_can_fall_back_to_owner_report():
@@ -357,7 +346,6 @@ def test_load_settings_uses_bridge_data_dir_env(monkeypatch, tmp_path):
 
     monkeypatch.setenv("RESEND_API_KEY", "test")
     monkeypatch.setenv("RESEND_WEBHOOK_SECRET", "test")
-    monkeypatch.setenv("RESEND_BRIDGE_SEND_SECRET", "test-send-secret")
     monkeypatch.setenv("RESEND_DOMAIN", "example.com")
     monkeypatch.setenv("BOT_FROM_LOCAL", "bot")
     monkeypatch.setenv("OWNER_FROM_LOCAL", "mail")
@@ -571,7 +559,7 @@ def test_mcp_confirmed_draft_send_adds_hidden_approval_token(monkeypatch, tmp_pa
     assert sent_payloads[0]["approval_token"]
 
 
-def test_mcp_bridge_send_uses_shared_secret(monkeypatch):
+def test_mcp_bridge_send_calls_bridge(monkeypatch):
     captured = {}
 
     class FakeResponse:
@@ -601,12 +589,11 @@ def test_mcp_bridge_send_uses_shared_secret(monkeypatch):
             return FakeResponse()
 
     monkeypatch.setattr(resend_mcp_server.httpx, "AsyncClient", FakeAsyncClient)
-    monkeypatch.setattr(resend_mcp_server, "BRIDGE_SEND_SECRET", "secret")
 
     result = asyncio.run(resend_mcp_server._send_via_bridge({"hello": "world"}))
 
     assert result == {"ok": True}
-    assert captured["headers"]["Authorization"] == "Bearer secret"
+    assert "Authorization" not in captured["headers"]
     assert captured["headers"]["Content-Type"] == "application/json"
 
 
@@ -649,7 +636,6 @@ def _patch_settings_for_send_endpoint(monkeypatch, tmp_path, drafts_file):
         "SETTINGS",
         replace(
             app.SETTINGS,
-            bridge_send_secret="secret",
             bridge_db=tmp_path / "state.db",
             attachment_dir=tmp_path / "attachments",
             mcp_drafts_file=drafts_file,
@@ -658,18 +644,7 @@ def _patch_settings_for_send_endpoint(monkeypatch, tmp_path, drafts_file):
     )
 
 
-def test_send_endpoint_requires_bridge_secret(monkeypatch, tmp_path):
-    drafts_file = tmp_path / "drafts.json"
-    _patch_settings_for_send_endpoint(monkeypatch, tmp_path, drafts_file)
-
-    with TestClient(app.app) as client:
-        response = client.post("/send", json={})
-
-    assert response.status_code == 401
-    assert response.json()["detail"] == "invalid send authorization"
-
-
-def test_send_endpoint_accepts_bridge_secret(monkeypatch, tmp_path):
+def test_send_endpoint_accepts_manual_send(monkeypatch, tmp_path):
     drafts_file = tmp_path / "drafts.json"
     payload = {
         "from_local": "mail",
@@ -692,7 +667,6 @@ def test_send_endpoint_accepts_bridge_secret(monkeypatch, tmp_path):
     with TestClient(app.app) as client:
         response = client.post(
             "/send",
-            headers={"Authorization": "Bearer secret"},
             json={
                 **payload,
                 "confirmed": True,

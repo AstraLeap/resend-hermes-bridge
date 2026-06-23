@@ -33,7 +33,6 @@ APP_DIR = Path(__file__).resolve().parent
 load_dotenv(APP_DIR / ".env")
 
 BRIDGE_URL = os.getenv("RESEND_BRIDGE_URL", "http://127.0.0.1:8765").rstrip("/")
-BRIDGE_SEND_SECRET = _require_env("RESEND_BRIDGE_SEND_SECRET")
 DRAFTS_FILE = APP_DIR / "mcp_email_drafts.json"
 DRAFTS_LOCK_FILE = APP_DIR / "mcp_email_drafts.json.lock"
 DRAFT_TTL_SECONDS = int(os.getenv("RESEND_MCP_DRAFT_TTL_SECONDS", "604800"))
@@ -229,10 +228,7 @@ async def _send_via_bridge(payload: dict[str, Any]) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=90) as client:
         response = await client.post(
             f"{BRIDGE_URL}/send",
-            headers={
-                "Authorization": f"Bearer {BRIDGE_SEND_SECRET}",
-                "Content-Type": "application/json",
-            },
+            headers={"Content-Type": "application/json"},
             json=payload,
         )
     try:

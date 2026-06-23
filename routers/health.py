@@ -17,7 +17,6 @@ async def health() -> dict[str, Any]:
         "ok": database.get("ok") is True,
         "resend_api_key_configured": bool(settings.resend_api_key),
         "resend_webhook_secret_configured": bool(settings.resend_webhook_secret),
-        "bridge_send_secret_configured": bool(settings.bridge_send_secret),
         "hermes_binary_available": settings.hermes_send_bin.exists(),
         "hermes_bridge_cache_dir": str(settings.hermes_bridge_cache_dir),
         "database": database,

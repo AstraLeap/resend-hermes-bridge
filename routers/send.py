@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hmac
 import json
 from typing import Any
 
@@ -12,24 +11,10 @@ from utils.email_core import ensure_list
 router = APIRouter()
 
 
-def request_bearer_token(request: Request) -> str:
-    authorization = request.headers.get("authorization", "").strip()
-    if authorization.lower().startswith("bearer "):
-        return authorization[7:].strip()
-    return request.headers.get("x-resend-bridge-secret", "").strip()
-
-
-def verify_send_authorization(request: Request) -> None:
-    token = request_bearer_token(request)
-    if not token or not hmac.compare_digest(token, bridge_app.SETTINGS.bridge_send_secret):
-        raise HTTPException(status_code=401, detail="invalid send authorization")
-
-
 @router.post("/send")
 async def send_email(request: Request) -> dict[str, Any]:
     if not bridge_app.SETTINGS.resend_api_key:
         raise HTTPException(status_code=503, detail="RESEND_API_KEY is not configured")
-    verify_send_authorization(request)
     try:
         raw = await request.json()
     except json.JSONDecodeError as exc:
