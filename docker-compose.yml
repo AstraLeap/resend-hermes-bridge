@@ -1,0 +1,16 @@
+services:
+  resend-hermes-bridge:
+    build: .
+    container_name: resend-hermes-bridge
+    ports:
+      - "8765:8765"
+    env_file:
+      - .env
+    restart: unless-stopped
+    # On Linux, this lets the container reach the host via host.docker.internal
+    # so it can talk to the Hermes API server (default port 8642).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # If you prefer, uncomment the next line and remove ports/extra_hosts
+    # to let the bridge share the host network namespace directly.
+    # network_mode: host

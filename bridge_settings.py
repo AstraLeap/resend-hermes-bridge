@@ -135,6 +135,50 @@ def generated_attachment_roots() -> list[Path]:
     return [Path.home().expanduser().resolve() / ".hermes" / "cache"]
 
 
+def validate_environment() -> list[str]:
+    """Collect configuration problems before starting the bridge."""
+    errors: list[str] = []
+
+    required = [
+        "RESEND_API_KEY",
+        "RESEND_WEBHOOK_SECRET",
+        "RESEND_BRIDGE_SEND_SECRET",
+        "RESEND_DOMAIN",
+        "BOT_FROM_LOCAL",
+        "OWNER_FROM_LOCAL",
+    ]
+    for name in required:
+        value = os.getenv(name, "").strip()
+        if not value:
+            errors.append(f"{name} is not set")
+        elif value in SEND_SECRET_PLACEHOLDERS:
+            errors.append(f"{name} is still a placeholder value")
+
+    send_bin = hermes_send_bin()
+    if not send_bin.exists():
+        errors.append(
+            f"hermes CLI not found at {send_bin}; install Hermes or set HERMES_SEND_BIN"
+        )
+
+    hermes_cfg_path = hermes_home() / "config.yaml"
+    if not hermes_cfg_path.exists():
+        errors.append(
+            f"Hermes config not found at {hermes_cfg_path}; set HERMES_HOME if needed"
+        )
+    else:
+        try:
+            config = read_hermes_config()
+            if not api_server_enabled(config):
+                errors.append("Hermes API_SERVER_ENABLED is not true in config.yaml")
+            for key in ("API_SERVER_HOST", "API_SERVER_PORT", "API_SERVER_KEY"):
+                if not config.get(key, "").strip():
+                    errors.append(f"Hermes {key} is missing in config.yaml")
+        except RuntimeError as exc:
+            errors.append(str(exc))
+
+    return errors
+
+
 @dataclass(frozen=True)
 class Settings:
     resend_api_key: str
@@ -173,6 +217,13 @@ class Settings:
 
 def load_settings() -> Settings:
     load_project_env()
+    validation_errors = validate_environment()
+    if validation_errors:
+        message = "Bridge configuration is incomplete:\n\n"
+        for error in validation_errors:
+            message += f"  - {error}\n"
+        message += "\nFix: cp .env.example .env, fill in the values, or run ./scripts/setup.sh"
+        raise RuntimeError(message)
     return Settings(
         resend_api_key=require_env("RESEND_API_KEY"),
         resend_webhook_secret=require_env("RESEND_WEBHOOK_SECRET"),

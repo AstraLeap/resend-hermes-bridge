@@ -2,9 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
+from pathlib import Path
 from typing import Any
 
-import app as bridge_app
+import yaml
+
+import bridge_settings
 
 
 def print_json(value: Any) -> None:
@@ -12,10 +17,14 @@ def print_json(value: Any) -> None:
 
 
 def command_status(_args: argparse.Namespace) -> None:
+    import app as bridge_app
+
     print_json(bridge_app.db_health())
 
 
 def command_failed(args: argparse.Namespace) -> None:
+    import app as bridge_app
+
     with bridge_app.open_db() as conn:
         rows = list(
             conn.execute(
@@ -33,6 +42,8 @@ def command_failed(args: argparse.Namespace) -> None:
 
 
 def command_steps(args: argparse.Namespace) -> None:
+    import app as bridge_app
+
     with bridge_app.open_db() as conn:
         rows = list(
             conn.execute(
@@ -49,6 +60,8 @@ def command_steps(args: argparse.Namespace) -> None:
 
 
 def command_drafts(_args: argparse.Namespace) -> None:
+    import app as bridge_app
+
     if not bridge_app.SETTINGS.mcp_drafts_file.exists():
         print_json([])
         return
@@ -75,6 +88,44 @@ def command_drafts(_args: argparse.Namespace) -> None:
     print_json(drafts)
 
 
+def command_install_mcp(_args: argparse.Namespace) -> None:
+    """Register the Resend MCP server in Hermes config.yaml."""
+    hermes_home = bridge_settings.hermes_home()
+    config_path = hermes_home / "config.yaml"
+    if not config_path.exists():
+        raise RuntimeError(f"Hermes config not found at {config_path}")
+
+    config_text = config_path.read_text(encoding="utf-8")
+    config: dict[str, Any] = yaml.safe_load(config_text) or {}
+
+    if "mcp_servers" not in config:
+        config["mcp_servers"] = {}
+    if not isinstance(config["mcp_servers"], dict):
+        raise RuntimeError("Hermes config.yaml has an invalid mcp_servers value")
+
+    repo_dir = Path(__file__).resolve().parent
+    python_bin = Path(sys.executable).resolve()
+    mcp_server_path = repo_dir / "resend_mcp_server.py"
+
+    bridge_url = os.getenv("RESEND_BRIDGE_URL", "http://127.0.0.1:8765").rstrip("/")
+
+    config["mcp_servers"]["resend_email"] = {
+        "command": str(python_bin),
+        "args": [str(mcp_server_path)],
+        "env": {"RESEND_BRIDGE_URL": bridge_url},
+    }
+
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    print_json({
+        "ok": True,
+        "config_path": str(config_path),
+        "server": "resend_email",
+        "command": str(python_bin),
+        "args": [str(mcp_server_path)],
+        "env": {"RESEND_BRIDGE_URL": bridge_url},
+    })
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Inspect resend-hermes-bridge state")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -92,6 +143,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     drafts = subparsers.add_parser("drafts", help="list local MCP drafts")
     drafts.set_defaults(func=command_drafts)
+
+    install_mcp = subparsers.add_parser(
+        "install-mcp", help="register the Resend MCP server in Hermes config.yaml"
+    )
+    install_mcp.set_defaults(func=command_install_mcp)
     return parser
 
 

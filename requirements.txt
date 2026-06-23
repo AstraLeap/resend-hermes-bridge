@@ -1,5 +1,6 @@
 fastapi==0.115.6
 httpx==0.28.1
 python-dotenv==1.0.1
+pyyaml==6.0.2
 svix==1.57.0
 uvicorn[standard]==0.34.0
