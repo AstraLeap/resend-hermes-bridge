@@ -43,10 +43,6 @@ BOT_FROM_LOCAL = (
 OWNER_FROM_LOCAL = (
     clean_from_local(_require_env("OWNER_FROM_LOCAL")) or ""
 ).lower()
-DEFAULT_FROM_LOCAL = (
-    clean_from_local(os.getenv("RESEND_DEFAULT_FROM_LOCAL", OWNER_FROM_LOCAL))
-    or OWNER_FROM_LOCAL
-).lower()
 
 mcp = FastMCP("resend-email")
 
@@ -165,7 +161,7 @@ def _draft_payload_for_display(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_manual_from_local(value: Any) -> str:
-    return (clean_from_local(value) or DEFAULT_FROM_LOCAL).lower()
+    return (clean_from_local(value) or OWNER_FROM_LOCAL).lower()
 
 
 def _format_outbound_payload(
