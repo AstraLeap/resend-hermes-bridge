@@ -434,7 +434,6 @@ def test_hermes_task_runs_direct_subprocess(monkeypatch, tmp_path):
 
 def test_create_app_can_rebind_settings(tmp_path):
     original_settings = app.SETTINGS
-    original_user_agent = app.USER_AGENT
     original_context_dir = app.BOT_REPLY_CONTEXT_DIR
     original_generated_roots = app.GENERATED_ATTACHMENT_ROOTS
     original_cache_dir = app.HERMES_BRIDGE_CACHE_DIR
@@ -445,7 +444,6 @@ def test_create_app_can_rebind_settings(tmp_path):
         bot_reply_context_dir=tmp_path / "contexts",
         generated_attachment_roots=[tmp_path / "generated"],
         hermes_bridge_cache_dir=tmp_path / "cache" / "resend-bridge",
-        user_agent="test-agent",
     )
 
     try:
@@ -453,10 +451,8 @@ def test_create_app_can_rebind_settings(tmp_path):
 
         assert created.title == "Resend Hermes Bridge"
         assert app.SETTINGS.bridge_db == tmp_path / "state.db"
-        assert app.USER_AGENT == "test-agent"
     finally:
         app.SETTINGS = original_settings
-        app.USER_AGENT = original_user_agent
         app.BOT_REPLY_CONTEXT_DIR = original_context_dir
         app.GENERATED_ATTACHMENT_ROOTS = original_generated_roots
         app.HERMES_BRIDGE_CACHE_DIR = original_cache_dir

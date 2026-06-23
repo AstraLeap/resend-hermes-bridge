@@ -150,7 +150,7 @@ async def download_relevant_attachments(
             async with client.stream(
                 "GET",
                 str(download_url),
-                headers={"User-Agent": bridge_app.USER_AGENT},
+                headers={"User-Agent": resend_client.USER_AGENT},
                 timeout=90,
             ) as response:
                 response.raise_for_status()
@@ -213,13 +213,11 @@ async def fetch_and_record_inbound(
             client,
             email_id,
             api_key=bridge_app.SETTINGS.resend_api_key,
-            user_agent=bridge_app.USER_AGENT,
         )
         attachments = await resend_client.fetch_received_attachments(
             client,
             email_id,
             api_key=bridge_app.SETTINGS.resend_api_key,
-            user_agent=bridge_app.USER_AGENT,
         )
         if not attachments:
             attachments = (

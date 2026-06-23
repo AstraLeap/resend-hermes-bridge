@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 
 RESEND_BASE_URL = "https://api.resend.com"
+USER_AGENT = "resend-hermes-bridge/1.0"
 
 
 class ResendAPIError(RuntimeError):
@@ -13,12 +14,12 @@ class ResendAPIError(RuntimeError):
         self.response_body = response_body
 
 
-def resend_headers(*, api_key: str, user_agent: str) -> dict[str, str]:
+def resend_headers(*, api_key: str) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {api_key}",
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "User-Agent": user_agent,
+        "User-Agent": USER_AGENT,
     }
 
 
@@ -27,12 +28,11 @@ async def fetch_received_email(
     email_id: str,
     *,
     api_key: str,
-    user_agent: str,
 ) -> dict[str, Any]:
     response = await client.get(
         f"{RESEND_BASE_URL}/emails/receiving/{email_id}",
         params={"html_format": "cid"},
-        headers=resend_headers(api_key=api_key, user_agent=user_agent),
+        headers=resend_headers(api_key=api_key),
     )
     response.raise_for_status()
     return response.json()
@@ -43,11 +43,10 @@ async def fetch_received_attachments(
     email_id: str,
     *,
     api_key: str,
-    user_agent: str,
 ) -> list[dict[str, Any]]:
     response = await client.get(
         f"{RESEND_BASE_URL}/emails/receiving/{email_id}/attachments",
-        headers=resend_headers(api_key=api_key, user_agent=user_agent),
+        headers=resend_headers(api_key=api_key),
     )
     if response.status_code == 404:
         return []
@@ -63,11 +62,10 @@ async def send_email(
     payload: dict[str, Any],
     *,
     api_key: str,
-    user_agent: str,
 ) -> dict[str, Any]:
     response = await client.post(
         f"{RESEND_BASE_URL}/emails",
-        headers=resend_headers(api_key=api_key, user_agent=user_agent),
+        headers=resend_headers(api_key=api_key),
         json=payload,
     )
     try:

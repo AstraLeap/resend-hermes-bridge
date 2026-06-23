@@ -291,7 +291,6 @@ async def send_resend_email(
                 client,
                 payload,
                 api_key=bridge_app.SETTINGS.resend_api_key,
-                user_agent=bridge_app.USER_AGENT,
             )
         resend_id = str(response_body.get("id") or "")
         bridge_app.update_outbound_message(

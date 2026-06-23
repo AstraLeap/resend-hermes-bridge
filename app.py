@@ -109,7 +109,7 @@ def exception_message(exc: Exception) -> str:
 
 
 SETTINGS = bridge_settings.load_settings()
-USER_AGENT = SETTINGS.user_agent
+USER_AGENT = "resend-hermes-bridge/1.0"
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log"}
 RELEVANT_EXTENSIONS = {
     ".csv",
@@ -143,11 +143,10 @@ async def lifespan(_app: FastAPI):
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
-    global SETTINGS, USER_AGENT, BOT_REPLY_CONTEXT_DIR, GENERATED_ATTACHMENT_ROOTS
+    global SETTINGS, BOT_REPLY_CONTEXT_DIR, GENERATED_ATTACHMENT_ROOTS
     global HERMES_BRIDGE_CACHE_DIR
     if settings is not None:
         SETTINGS = settings
-        USER_AGENT = settings.user_agent
         BOT_REPLY_CONTEXT_DIR = settings.bot_reply_context_dir
         GENERATED_ATTACHMENT_ROOTS = settings.generated_attachment_roots
         HERMES_BRIDGE_CACHE_DIR = settings.hermes_bridge_cache_dir

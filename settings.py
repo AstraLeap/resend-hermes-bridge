@@ -118,7 +118,6 @@ class Settings:
     event_recovery_limit: int
     notification_target: str
     ai_name: str
-    user_agent: str
     bot_reply_context_dir: Path
     generated_attachment_roots: list[Path]
 
@@ -164,7 +163,6 @@ def load_settings() -> Settings:
         event_recovery_limit=int(os.getenv("BRIDGE_EVENT_RECOVERY_LIMIT", "50")),
         notification_target=os.getenv("NOTIFICATION_TARGET", "telegram").strip(),
         ai_name=os.getenv("AI_NAME", "卡宝").strip(),
-        user_agent=os.getenv("BRIDGE_USER_AGENT", "resend-hermes-bridge/1.0"),
         bot_reply_context_dir=Path(
             os.getenv("BOT_REPLY_CONTEXT_DIR", str(data_dir / "bot_reply_contexts"))
         ),
