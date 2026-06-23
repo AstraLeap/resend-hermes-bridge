@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import shutil
 from email.utils import parseaddr
 from pathlib import Path
 from typing import Any
@@ -106,24 +105,6 @@ def _validate_agent_attachment_paths(paths: list[str]) -> list[str]:
     return valid
 
 
-def copy_attachment_to_hermes_cache(
-    email_id: str,
-    source_path: Path,
-    filename: str,
-) -> Path:
-    target_dir = bridge_app.hermes_bridge_inbound_dir(email_id)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target_dir.chmod(0o700)
-    bridge_app.apply_host_cache_permissions(target_dir, directory=True)
-    target_path = bridge_app.unique_path(
-        target_dir / bridge_app.safe_filename(filename or source_path.name)
-    )
-    shutil.copy2(source_path, target_path)
-    target_path.chmod(0o600)
-    bridge_app.apply_host_cache_permissions(target_path, directory=False)
-    return target_path
-
-
 async def download_relevant_attachments(
     client: httpx.AsyncClient,
     email_id: str,
@@ -200,8 +181,7 @@ async def download_relevant_attachments(
             snippet = read_text_snippet(path, attachment)
             if snippet:
                 item["text_snippet"] = snippet
-            hermes_path = copy_attachment_to_hermes_cache(email_id, path, filename)
-            item["local_path"] = str(hermes_path)
+            item["local_path"] = str(path)
         except Exception as exc:
             try:
                 tmp_path.unlink(missing_ok=True)

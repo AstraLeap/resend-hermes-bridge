@@ -53,7 +53,6 @@ from services.hermes_client import (  # noqa: F401
 )
 from services.inbound_email import (  # noqa: F401
     build_activity_summary,
-    copy_attachment_to_hermes_cache,
     decide_bot_email,
     download_relevant_attachments,
     email_summary,
@@ -216,12 +215,12 @@ def _path_is_relative_to(path: Path, root: Path) -> bool:
     return True
 
 
-def hermes_bridge_inbound_dir(email_id: str) -> Path:
-    return HERMES_BRIDGE_CACHE_DIR / "inbound" / safe_filename(email_id)
+def bridge_inbound_attachment_dir(email_id: str) -> Path:
+    return SETTINGS.attachment_dir / safe_filename(email_id)
 
 
 def agent_attachment_roots() -> list[Path]:
-    roots = [HERMES_BRIDGE_CACHE_DIR]
+    roots = [SETTINGS.attachment_dir, HERMES_BRIDGE_CACHE_DIR]
     roots.extend(GENERATED_ATTACHMENT_ROOTS)
     return [root.expanduser().resolve() for root in roots]
 

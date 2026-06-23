@@ -432,19 +432,6 @@ def test_hermes_task_runs_direct_subprocess(monkeypatch, tmp_path):
     assert decision["owner_report"] == "done"
 
 
-def test_copy_attachment_to_hermes_cache_uses_resend_bridge_subdir(monkeypatch, tmp_path):
-    cache_dir = tmp_path / "hermes" / "cache" / "resend-bridge"
-    source = tmp_path / "downloads" / "report.txt"
-    source.parent.mkdir(parents=True)
-    source.write_text("report", encoding="utf-8")
-    monkeypatch.setattr(app, "HERMES_BRIDGE_CACHE_DIR", cache_dir)
-
-    copied = app.copy_attachment_to_hermes_cache("email-1", source, "report.txt")
-
-    assert copied == cache_dir / "inbound" / "email-1" / "report.txt"
-    assert copied.read_text(encoding="utf-8") == "report"
-
-
 def test_create_app_can_rebind_settings(tmp_path):
     original_settings = app.SETTINGS
     original_user_agent = app.USER_AGENT
