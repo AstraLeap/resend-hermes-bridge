@@ -354,7 +354,6 @@ def test_load_settings_uses_bridge_data_dir_env(monkeypatch, tmp_path):
         "PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}"
     )
     monkeypatch.setenv("BRIDGE_DATA_DIR", str(data_dir))
-    monkeypatch.delenv("BOT_REPLY_CONTEXT_DIR", raising=False)
 
     settings = app.bridge_settings.load_settings()
 

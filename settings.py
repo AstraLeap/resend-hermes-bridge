@@ -138,8 +138,6 @@ def load_settings() -> Settings:
         event_recovery_limit=int(os.getenv("BRIDGE_EVENT_RECOVERY_LIMIT", "50")),
         notification_target=os.getenv("NOTIFICATION_TARGET", "telegram").strip(),
         ai_name=os.getenv("AI_NAME", "卡宝").strip(),
-        bot_reply_context_dir=Path(
-            os.getenv("BOT_REPLY_CONTEXT_DIR", str(data_dir / "bot_reply_contexts"))
-        ),
+        bot_reply_context_dir=data_dir / "bot_reply_contexts",
         generated_attachment_roots=generated_attachment_roots(),
     )
