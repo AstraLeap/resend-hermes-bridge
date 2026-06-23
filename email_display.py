@@ -1,0 +1,262 @@
+from __future__ import annotations
+
+import re
+from email.utils import parseaddr
+from html import unescape
+from pathlib import Path
+from typing import Any
+
+HTML_BREAK_RE = re.compile(r"(?i)<\s*(br|/p|/div|/li|/tr)\b[^>]*>")
+HTML_SCRIPT_STYLE_RE = re.compile(r"(?is)<\s*(script|style)\b.*?<\s*/\s*\1\s*>")
+HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def as_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
+def escape_markdown_table(value: Any) -> str:
+    text = str(value or "")
+    text = escape_html_autodetect(text)
+    return text.replace("\\", "\\\\").replace("|", "\\|").replace("\n", "<br>")
+
+
+def escape_html_autodetect(value: str) -> str:
+    return str(value or "").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def escape_code_block_text(value: str) -> str:
+    text = escape_html_autodetect(str(value or ""))
+    return text.replace("```", "'''")
+
+
+def display_address(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    name, address = parseaddr(raw)
+    if name and address and "<" in raw and ">" in raw:
+        return f"{name} ({address})"
+    return raw
+
+
+def join_addresses(value: Any) -> str:
+    return ", ".join(display_address(item) for item in as_list(value) if str(item).strip())
+
+
+def html_to_display_text(value: str) -> str:
+    html = str(value or "").strip()
+    if not html:
+        return ""
+
+    text = HTML_SCRIPT_STYLE_RE.sub("", html)
+    text = HTML_BREAK_RE.sub("\n", text)
+    text = HTML_TAG_RE.sub("", text)
+    text = unescape(text)
+
+    lines: list[str] = []
+    previous_blank = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            if lines and not previous_blank:
+                lines.append("")
+            previous_blank = True
+            continue
+        lines.append(line)
+        previous_blank = False
+    return "\n".join(lines).strip()
+
+
+def format_sender(payload: dict[str, Any], *, domain: str) -> str:
+    explicit = str(payload.get("from") or payload.get("from_email") or "").strip()
+    if explicit:
+        return display_address(explicit)
+    local = str(payload.get("from_local") or "bot").strip()
+    address = f"{local}@{domain}"
+    from_name = str(payload.get("from_name") or "").strip()
+    return f"{from_name} ({address})" if from_name else address
+
+
+def email_display_rows(
+    payload: dict[str, Any],
+    *,
+    domain: str,
+    draft_id: str | None = None,
+    email_id: str | None = None,
+) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    if draft_id:
+        rows.append(("Draft ID", draft_id))
+    if email_id:
+        rows.append(("Email ID", email_id))
+    rows.extend(
+        [
+            ("From", format_sender(payload, domain=domain)),
+            ("To", join_addresses(payload.get("to"))),
+        ]
+    )
+    for key, label in (("cc", "CC"), ("bcc", "BCC"), ("reply_to", "Reply-To")):
+        joined = join_addresses(payload.get(key))
+        if joined:
+            rows.append((label, joined))
+    rows.append(("Subject", str(payload.get("subject") or "")))
+    return rows
+
+
+def email_body_block(payload: dict[str, Any], *, body_limit: int | None = None) -> tuple[str, str]:
+    text = str(payload.get("text") or "").strip()
+    html = str(payload.get("html") or "").strip()
+    if text:
+        label = "正文"
+        body = text
+    elif html:
+        label = "HTML 正文"
+        body = html_to_display_text(html) or "(空)"
+    else:
+        label = "正文"
+        body = "(空)"
+    if body_limit is not None and len(body) > body_limit:
+        body = body[:body_limit] + "\n...[truncated]"
+    return label, body
+
+
+def render_markdown_table(headers: list[str], rows: list[list[str]]) -> list[str]:
+    lines = [
+        "| " + " | ".join(escape_markdown_table(header) for header in headers) + " |",
+        "| " + " | ".join("---" for _header in headers) + " |",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(escape_markdown_table(value) for value in row) + " |")
+    return lines
+
+
+def render_attachments_markdown(
+    attachments: list[dict[str, Any]] | None,
+) -> list[str]:
+    if not attachments:
+        return []
+    lines = [
+        "",
+        "**附件**",
+        "",
+    ]
+    rows: list[list[str]] = []
+    for attachment in attachments[:12]:
+        filename = attachment_display_name(attachment)
+        content_type = attachment.get("content_type") or "unknown type"
+        size = attachment_display_size(attachment)
+        rows.append([filename, str(content_type), size])
+    if len(attachments) > 12:
+        rows.append(["...", f"还有 {len(attachments) - 12} 个附件", ""])
+    lines.extend(render_markdown_table(["文件", "类型", "大小"], rows))
+    return lines
+
+
+def attachment_display_name(attachment: dict[str, Any]) -> str:
+    filename = str(attachment.get("filename") or attachment.get("id") or "").strip()
+    path = str(attachment.get("path") or attachment.get("local_path") or "").strip()
+    if not filename and path:
+        filename = Path(path).name
+    if path:
+        return f"{filename or 'attachment'} ({path})"
+    return filename or "attachment"
+
+
+def attachment_display_size(attachment: dict[str, Any]) -> str:
+    size = attachment.get("size")
+    if size not in (None, ""):
+        return str(size)
+    path = str(attachment.get("path") or attachment.get("local_path") or "").strip()
+    if path:
+        try:
+            return str(Path(path).expanduser().stat().st_size)
+        except OSError:
+            pass
+    content = str(attachment.get("content") or "").strip()
+    if content:
+        compact = re.sub(r"\s+", "", content)
+        padding = len(compact) - len(compact.rstrip("="))
+        decoded_size = max((len(compact) * 3) // 4 - padding, 0)
+        return str(decoded_size)
+    return "unknown size"
+
+
+def render_email_markdown(
+    payload: dict[str, Any],
+    *,
+    title: str | None,
+    domain: str,
+    draft_id: str | None = None,
+    email_id: str | None = None,
+    footer: str | None = None,
+    attachments: list[dict[str, Any]] | None = None,
+    body_limit: int | None = None,
+) -> str:
+    lines: list[str] = []
+    if title:
+        lines.extend([title, ""])
+    rows = [
+        [label, value]
+        for label, value in email_display_rows(
+            payload,
+            domain=domain,
+            draft_id=draft_id,
+            email_id=email_id,
+        )
+    ]
+    lines.extend(render_markdown_table(["字段", "内容"], rows))
+
+    body_label, body = email_body_block(payload, body_limit=body_limit)
+    lines.extend(
+        [
+            "",
+            f"**{body_label}**",
+            "",
+            "```text",
+            escape_code_block_text(body),
+            "```",
+        ]
+    )
+    display_attachments = attachments
+    if display_attachments is None:
+        display_attachments = payload.get("attachments")
+    lines.extend(render_attachments_markdown(display_attachments))
+    if footer:
+        lines.extend(["", escape_html_autodetect(footer)])
+    return "\n".join(lines)
+
+
+def render_draft_markdown(
+    draft_id: str,
+    draft: dict[str, Any],
+    *,
+    title: str,
+    domain: str,
+    footer: str | None = None,
+) -> str:
+    return render_email_markdown(
+        draft["payload"],
+        title=title,
+        domain=domain,
+        draft_id=draft_id,
+        footer=footer,
+    )
+
+
+def inbound_email_payload(email: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "from": email.get("from"),
+        "to": email.get("to"),
+        "cc": email.get("cc"),
+        "bcc": email.get("bcc"),
+        "subject": email.get("subject") or "(no subject)",
+        "text": email.get("text") or "",
+        "html": email.get("html") or "",
+    }

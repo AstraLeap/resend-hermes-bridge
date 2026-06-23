@@ -1,0 +1,15 @@
+[Unit]
+Description=Resend inbound bridge for Hermes
+After=network-online.target hermes-gateway.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/resend-hermes-bridge
+EnvironmentFile=%h/resend-hermes-bridge/.env
+ExecStart=%h/resend-hermes-bridge/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8765
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
