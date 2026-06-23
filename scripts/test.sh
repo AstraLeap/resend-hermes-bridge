@@ -67,12 +67,6 @@ export OWNER_FROM_LOCAL=mail
 export HERMES_HOME="$ROOT_DIR/.test-hermes"
 
 mkdir -p "$HERMES_HOME"
-printf '%s\n' \
-  'API_SERVER_ENABLED: true' \
-  'API_SERVER_HOST: 127.0.0.1' \
-  'API_SERVER_PORT: 8642' \
-  'API_SERVER_KEY: test-api-key' \
-  > "$HERMES_HOME/config.yaml"
 
 "$PYTHON_BIN" -m ruff check "$ROOT_DIR"
 exec "$PYTHON_BIN" -m pytest "$@"

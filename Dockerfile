@@ -9,8 +9,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Provide a container-side `hermes` wrapper that forwards `hermes send` to the
+# host proxy. The real Hermes binary lives on the host.
+RUN chmod +x /app/scripts/hermes \
+    && ln -s /app/scripts/hermes /usr/local/bin/hermes
+
 # Runtime state lives here by default
-RUN mkdir -p /app/attachments /app/bot_reply_contexts
+RUN mkdir -p /app/data/attachments /app/data/bot_reply_contexts
 
 EXPOSE 8765
 

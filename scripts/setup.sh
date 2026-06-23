@@ -117,16 +117,33 @@ else
     warn "Make sure Hermes is installed before running the bridge"
 fi
 
-# Optional: install systemd user service
+# Optional: install Hermes host proxy systemd user service
 if command -v systemctl >/dev/null 2>&1; then
-    read -rp "Install systemd user service? [y/N] " install_service
-    if [[ "$install_service" =~ ^[Yy]$ ]]; then
+    read -rp "Install Hermes host proxy systemd user service? [y/N] " install_proxy
+    if [[ "$install_proxy" =~ ^[Yy]$ ]]; then
         mkdir -p "$HOME/.config/systemd/user"
-        sed -e "s|%h/resend-hermes-bridge|$ROOT_DIR|g" \
-            "$ROOT_DIR/deploy/resend-hermes-bridge.service.example" \
-            > "$HOME/.config/systemd/user/resend-hermes-bridge.service"
+        cat > "$HOME/.config/systemd/user/hermes-send-proxy.service" <<EOF
+[Unit]
+Description=Hermes host proxy for Resend Hermes Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=$ROOT_DIR
+Environment="PATH=$HOME/.hermes/bin:$HOME/.hermes/hermes-agent/venv/bin:$HOME/.hermes/hermes-agent/node_modules/.bin:$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="HERMES_HOME=$HOME/.hermes"
+Environment="HERMES_PROXY_HOST=127.0.0.1"
+Environment="HERMES_PROXY_SECRET=$bridge_secret"
+ExecStart=$VENV_DIR/bin/python scripts/hermes_send_proxy.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+EOF
         systemctl --user daemon-reload
-        ok "Installed user service. Start with: systemctl --user enable --now resend-hermes-bridge.service"
+        ok "Installed host proxy service. Start with: systemctl --user enable --now hermes-send-proxy.service"
     fi
 fi
 
@@ -138,5 +155,5 @@ if [[ "$install_mcp" =~ ^[Yy]$ ]]; then
 fi
 
 ok "Setup complete. Edit $ENV_FILE if needed, then start the bridge."
-info "Run locally: $VENV_DIR/bin/uvicorn app:app --host 127.0.0.1 --port 8765"
-info "Run with Docker: docker compose up -d"
+info "Start the host proxy: systemctl --user enable --now hermes-send-proxy.service"
+info "Run the bridge with Docker: docker compose up -d --build"

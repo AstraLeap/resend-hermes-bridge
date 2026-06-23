@@ -52,76 +52,26 @@ def hermes_home() -> Path:
     return Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))).expanduser()
 
 
-def strip_simple_yaml_value(value: str) -> str:
-    value = value.strip()
+def bridge_data_dir() -> Path:
+    return Path(os.getenv("BRIDGE_DATA_DIR", str(APP_DIR / "data"))).expanduser()
+
+
+def optional_path_env(name: str) -> Path | None:
+    value = os.getenv(name, "").strip()
     if not value:
-        return ""
-    if value[0] in {'"', "'"} and value[-1:] == value[0]:
-        return value[1:-1]
-    if " #" in value:
-        value = value.split(" #", 1)[0].rstrip()
-    return value
+        return None
+    return Path(value).expanduser()
 
 
-def read_hermes_config() -> dict[str, str]:
-    path = hermes_home() / "config.yaml"
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError as exc:
-        raise RuntimeError(f"Hermes config not found at {path}") from exc
-
-    config: dict[str, str] = {}
-    wanted = {
-        "API_SERVER_ENABLED",
-        "API_SERVER_HOST",
-        "API_SERVER_PORT",
-        "API_SERVER_KEY",
-    }
-    for raw_line in lines:
-        if not raw_line or raw_line[0].isspace():
-            continue
-        line = raw_line.strip()
-        if not line or line.startswith("#") or ":" not in line:
-            continue
-        key, value = line.split(":", 1)
-        key = key.strip()
-        if key in wanted:
-            config[key] = strip_simple_yaml_value(value)
-    return config
+def hermes_proxy_url() -> str:
+    return os.getenv("HERMES_PROXY_URL", "http://127.0.0.1:18765").strip().rstrip("/")
 
 
-def require_hermes_config(config: dict[str, str], name: str) -> str:
-    value = config.get(name, "").strip()
-    if not value:
-        raise RuntimeError(
-            f"Hermes config value {name} is required in HERMES_HOME/config.yaml"
-        )
-    return value
-
-
-def api_server_enabled(config: dict[str, str]) -> bool:
-    value = require_hermes_config(config, "API_SERVER_ENABLED").lower()
-    return value in {"1", "true", "yes", "y", "on"}
-
-
-def hermes_api_url() -> str:
-    config = read_hermes_config()
-    if not api_server_enabled(config):
-        raise RuntimeError("Hermes API server must be enabled in HERMES_HOME/config.yaml")
-    host = require_hermes_config(config, "API_SERVER_HOST")
-    port = require_hermes_config(config, "API_SERVER_PORT")
-    if host in {"0.0.0.0", "::"}:
-        host = "127.0.0.1"
-    elif ":" in host and not host.startswith("["):
-        host = f"[{host}]"
-    return f"http://{host}:{port}/v1/chat/completions"
-
-
-def hermes_api_key() -> str:
-    config = read_hermes_config()
-    if not api_server_enabled(config):
-        raise RuntimeError("Hermes API server must be enabled in HERMES_HOME/config.yaml")
-    return require_hermes_config(config, "API_SERVER_KEY")
+def hermes_proxy_secret() -> str:
+    return (
+        os.getenv("HERMES_PROXY_SECRET")
+        or os.getenv("RESEND_BRIDGE_SEND_SECRET", "")
+    ).strip()
 
 
 def env_bool(name: str, default: str = "false") -> bool:
@@ -160,21 +110,8 @@ def validate_environment() -> list[str]:
             f"hermes CLI not found at {send_bin}; install Hermes or set HERMES_SEND_BIN"
         )
 
-    hermes_cfg_path = hermes_home() / "config.yaml"
-    if not hermes_cfg_path.exists():
-        errors.append(
-            f"Hermes config not found at {hermes_cfg_path}; set HERMES_HOME if needed"
-        )
-    else:
-        try:
-            config = read_hermes_config()
-            if not api_server_enabled(config):
-                errors.append("Hermes API_SERVER_ENABLED is not true in config.yaml")
-            for key in ("API_SERVER_HOST", "API_SERVER_PORT", "API_SERVER_KEY"):
-                if not config.get(key, "").strip():
-                    errors.append(f"Hermes {key} is missing in config.yaml")
-        except RuntimeError as exc:
-            errors.append(str(exc))
+    if not hermes_proxy_url():
+        errors.append("HERMES_PROXY_URL is not set")
 
     return errors
 
@@ -188,8 +125,10 @@ class Settings:
     bot_from_local: str
     owner_from_local: str
     hermes_send_bin: Path
-    hermes_api_url: str
-    hermes_api_key: str
+    hermes_proxy_url: str
+    hermes_proxy_secret: str
+    bridge_host_data_dir: Path | None
+    hermes_host_home: Path | None
     bridge_db: Path
     attachment_dir: Path
     mcp_drafts_file: Path
@@ -224,6 +163,7 @@ def load_settings() -> Settings:
             message += f"  - {error}\n"
         message += "\nFix: cp .env.example .env, fill in the values, or run ./scripts/setup.sh"
         raise RuntimeError(message)
+    data_dir = bridge_data_dir()
     return Settings(
         resend_api_key=require_env("RESEND_API_KEY"),
         resend_webhook_secret=require_env("RESEND_WEBHOOK_SECRET"),
@@ -232,12 +172,14 @@ def load_settings() -> Settings:
         bot_from_local=require_env("BOT_FROM_LOCAL").lower(),
         owner_from_local=require_env("OWNER_FROM_LOCAL").lower(),
         hermes_send_bin=hermes_send_bin(),
-        hermes_api_url=hermes_api_url(),
-        hermes_api_key=hermes_api_key(),
-        bridge_db=APP_DIR / "state.db",
-        attachment_dir=APP_DIR / "attachments",
-        mcp_drafts_file=APP_DIR / "mcp_email_drafts.json",
-        mcp_drafts_lock_file=APP_DIR / "mcp_email_drafts.json.lock",
+        hermes_proxy_url=hermes_proxy_url(),
+        hermes_proxy_secret=hermes_proxy_secret(),
+        bridge_host_data_dir=optional_path_env("BRIDGE_HOST_DATA_DIR"),
+        hermes_host_home=optional_path_env("HERMES_HOST_HOME"),
+        bridge_db=data_dir / "state.db",
+        attachment_dir=data_dir / "attachments",
+        mcp_drafts_file=data_dir / "mcp_email_drafts.json",
+        mcp_drafts_lock_file=data_dir / "mcp_email_drafts.json.lock",
         max_attachment_bytes=int(os.getenv("MAX_ATTACHMENT_DOWNLOAD_BYTES", "15728640")),
         max_outbound_attachment_bytes=int(
             os.getenv("MAX_OUTBOUND_ATTACHMENT_BYTES", "31457280")
@@ -250,7 +192,7 @@ def load_settings() -> Settings:
         ai_name=os.getenv("AI_NAME", "卡宝").strip(),
         user_agent=os.getenv("BRIDGE_USER_AGENT", "resend-hermes-bridge/1.0"),
         bot_reply_context_dir=Path(
-            os.getenv("BOT_REPLY_CONTEXT_DIR", str(APP_DIR / "bot_reply_contexts"))
+            os.getenv("BOT_REPLY_CONTEXT_DIR", str(data_dir / "bot_reply_contexts"))
         ),
         generated_attachment_roots=generated_attachment_roots(),
     )

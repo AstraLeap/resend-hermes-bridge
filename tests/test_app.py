@@ -228,38 +228,31 @@ def test_bot_email_notice_ignores_custom_title_env(monkeypatch):
     assert "不应该生效" not in messages[0]
 
 
-def test_notify_telegram_uses_rich_markdown_for_telegram(monkeypatch):
-    sent = {}
+def test_notify_telegram_uses_hermes_send_by_default(monkeypatch, tmp_path):
+    commands = []
     updates = []
     steps = []
     message = "| 字段 | 内容 |\n| --- | --- |\n| From | sender@example.com |"
+    hermes_bin = tmp_path / "hermes"
+    hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    hermes_bin.chmod(0o755)
 
-    class FakeResponse:
-        status_code = 200
-        text = ""
+    class FakeProcess:
+        returncode = 0
 
-        def json(self):
-            return {"ok": True, "result": {"message_id": 42}}
+        async def communicate(self):
+            return b"sent\n", b""
 
-    class FakeAsyncClient:
-        def __init__(self, *_args, **_kwargs):
-            pass
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        commands.append(args)
+        return FakeProcess()
 
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_args):
-            return None
-
-        async def post(self, url, *, json):
-            sent["url"] = url
-            sent["json"] = json
-            return FakeResponse()
-
-    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
-    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "12345")
-    monkeypatch.setattr(app.httpx, "AsyncClient", FakeAsyncClient)
-    monkeypatch.setattr(app, "SETTINGS", replace(app.SETTINGS, notification_target="telegram"))
+    monkeypatch.setattr(app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(app.SETTINGS, notification_target="telegram", hermes_send_bin=hermes_bin),
+    )
     monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 99)
     monkeypatch.setattr(
         app,
@@ -274,13 +267,65 @@ def test_notify_telegram_uses_rich_markdown_for_telegram(monkeypatch):
 
     asyncio.run(app.notify_telegram(message, email_id="email-1"))
 
-    assert sent["url"].endswith("/sendRichMessage")
-    assert sent["json"]["chat_id"] == 12345
-    assert sent["json"]["rich_message"]["markdown"] == message
-    assert "```" not in sent["json"]["rich_message"]["markdown"]
+    assert commands == [(str(hermes_bin), "send", "--to", "telegram", message)]
     assert updates[-1][0] == 99
     assert updates[-1][1]["status"] == app.OutboundStatus.SENT
     assert steps[-1]["step"] == "telegram_notify"
+
+
+def test_notify_media_uses_host_path_for_hermes_send(monkeypatch, tmp_path):
+    commands = []
+    container_data = tmp_path / "container" / "data"
+    host_data = tmp_path / "host" / "data"
+    attachment = container_data / "attachments" / "email-1" / "chart.png"
+    hermes_bin = tmp_path / "hermes"
+    attachment.parent.mkdir(parents=True)
+    attachment.write_bytes(b"\x89PNG\r\n\x1a\n")
+    hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    hermes_bin.chmod(0o755)
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"sent\n", b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        commands.append(args)
+        return FakeProcess()
+
+    monkeypatch.setattr(app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(
+            app.SETTINGS,
+            notification_target="qqbot",
+            hermes_send_bin=hermes_bin,
+            bridge_db=container_data / "state.db",
+            bridge_host_data_dir=host_data,
+        ),
+    )
+    monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 99)
+    monkeypatch.setattr(app, "update_outbound_message", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(app, "record_processing_step", lambda **_kwargs: None)
+
+    asyncio.run(
+        app.notify_telegram(
+            "done",
+            email_id="email-1",
+            attachment_paths=[str(attachment)],
+        )
+    )
+
+    assert commands[0] == (str(hermes_bin), "send", "--to", "qqbot", "done")
+    assert commands[1] == (
+        str(hermes_bin),
+        "send",
+        "--to",
+        "qqbot",
+        f"MEDIA:{host_data / 'attachments' / 'email-1' / 'chart.png'}",
+    )
 
 
 def test_reply_notice_shows_only_sent_email_without_summary_footer():
@@ -356,31 +401,44 @@ def test_hermes_task_prompt_keeps_bridge_as_delivery_owner():
     assert "通知端（如 Telegram）" in prompt
     assert "不要编造不存在的路径" in prompt
 
+def test_load_settings_uses_bridge_data_dir_env(monkeypatch, tmp_path):
+    hermes_bin = tmp_path / "hermes-bin"
+    hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    hermes_bin.chmod(0o755)
+    data_dir = tmp_path / "runtime-data"
+
+    monkeypatch.setenv("RESEND_API_KEY", "test")
+    monkeypatch.setenv("RESEND_WEBHOOK_SECRET", "test")
+    monkeypatch.setenv("RESEND_BRIDGE_SEND_SECRET", "test-send-secret")
+    monkeypatch.setenv("RESEND_DOMAIN", "example.com")
+    monkeypatch.setenv("BOT_FROM_LOCAL", "bot")
+    monkeypatch.setenv("OWNER_FROM_LOCAL", "mail")
+    monkeypatch.setenv("HERMES_SEND_BIN", str(hermes_bin))
+    monkeypatch.setenv("BRIDGE_DATA_DIR", str(data_dir))
+    monkeypatch.delenv("BOT_REPLY_CONTEXT_DIR", raising=False)
+
+    settings = app.bridge_settings.load_settings()
+
+    assert settings.bridge_db == data_dir / "state.db"
+    assert settings.attachment_dir == data_dir / "attachments"
+    assert settings.mcp_drafts_file == data_dir / "mcp_email_drafts.json"
+    assert settings.bot_reply_context_dir == data_dir / "bot_reply_contexts"
 
 
+def test_hermes_proxy_maps_host_and_bridge_paths(monkeypatch, tmp_path):
+    container_data = tmp_path / "container" / "data"
+    host_data = tmp_path / "host" / "data"
+    container_home = tmp_path / "container" / "hermes"
+    host_home = tmp_path / "host" / "hermes"
+    container_cache_file = container_home / "cache" / "chart.png"
+    host_cache_file = host_home / "cache" / "chart.png"
+    downloaded_file = container_data / "attachments" / "email-1" / "report.txt"
+    downloaded_file.parent.mkdir(parents=True)
+    downloaded_file.write_text("report", encoding="utf-8")
+    container_cache_file.parent.mkdir(parents=True)
+    host_cache_file.parent.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(container_home))
 
-def test_hermes_api_defaults_read_gateway_config(monkeypatch, tmp_path):
-    config = tmp_path / "config.yaml"
-    config.write_text(
-        "\n".join(
-            [
-                "API_SERVER_ENABLED: true",
-                "API_SERVER_HOST: 0.0.0.0",
-                "API_SERVER_PORT: 9876",
-                "API_SERVER_KEY: test-api-key",
-                "model:",
-                "  default: kimi-k2.6",
-            ]
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-    assert app._hermes_api_url() == "http://127.0.0.1:9876/v1/chat/completions"
-    assert app._hermes_api_key() == "test-api-key"
-
-
-def test_hermes_api_request_uses_gateway_default_model(monkeypatch):
     captured = {}
 
     class FakeResponse:
@@ -389,21 +447,21 @@ def test_hermes_api_request_uses_gateway_default_model(monkeypatch):
 
         def json(self):
             return {
-                "choices": [
+                "stdout": json.dumps(
                     {
-                        "message": {
-                            "content": (
-                                '{"action":"notify","executed_task":true,'
-                                '"owner_report":"done"}'
-                            )
-                        }
+                        "action": "notify",
+                        "executed_task": True,
+                        "owner_report": "done",
+                        "owner_report_attachments": [str(host_cache_file)],
                     }
-                ]
+                ),
+                "stderr": "session_id: test-session",
+                "returncode": 0,
             }
 
     class FakeAsyncClient:
         def __init__(self, *args, **kwargs):
-            pass
+            captured["timeout"] = kwargs.get("timeout")
 
         async def __aenter__(self):
             return self
@@ -417,38 +475,51 @@ def test_hermes_api_request_uses_gateway_default_model(monkeypatch):
             captured["json"] = json
             return FakeResponse()
 
+    custom_settings = replace(
+        app.SETTINGS,
+        bridge_db=container_data / "state.db",
+        attachment_dir=container_data / "attachments",
+        bot_reply_context_dir=container_data / "bot_reply_contexts",
+        generated_attachment_roots=[container_home / "cache"],
+        bridge_host_data_dir=host_data,
+        hermes_host_home=host_home,
+        hermes_proxy_url="http://127.0.0.1:18765",
+        hermes_proxy_secret="secret",
+        hermes_timeout_seconds=30,
+    )
+    monkeypatch.setattr(app, "SETTINGS", custom_settings)
+    monkeypatch.setattr(app, "GENERATED_ATTACHMENT_ROOTS", custom_settings.generated_attachment_roots)
     monkeypatch.setattr(app.httpx, "AsyncClient", FakeAsyncClient)
     monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 1)
     monkeypatch.setattr(app, "update_outbound_message", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(app, "record_hermes_decision", lambda **_kwargs: None)
     monkeypatch.setattr(app, "record_processing_step", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        app,
-        "SETTINGS",
-        replace(
-            app.SETTINGS,
-            hermes_api_key="",
-            hermes_api_url="http://127.0.0.1:8642/v1/chat/completions",
-        ),
-    )
 
     decision = asyncio.run(
-        app.run_hermes_api_server_task(
+        app.run_hermes_proxy_task(
             {
                 "task": "test",
                 "sender": "sender@example.com",
                 "email": {"text_preview": "hello"},
                 "attachments": [],
-                "downloaded_files": [],
+                "downloaded_files": [
+                    {
+                        "filename": "report.txt",
+                        "relevant": True,
+                        "local_path": str(downloaded_file),
+                    }
+                ],
             },
             "email-1",
             "subject",
         )
     )
 
-    assert decision["owner_report"] == "done"
-    assert "model" not in captured["json"]
-    assert captured["json"]["messages"]
+    assert captured["url"] == "http://127.0.0.1:18765/task"
+    assert captured["headers"]["Authorization"] == "Bearer secret"
+    assert str(host_data / "attachments" / "email-1" / "report.txt") in captured["json"]["prompt"]
+    assert str(host_home / "cache") in captured["json"]["prompt"]
+    assert decision["owner_report_attachments"] == [str(container_cache_file)]
 
 
 def test_create_app_can_rebind_settings(tmp_path):

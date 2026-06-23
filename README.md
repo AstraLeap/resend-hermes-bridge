@@ -11,11 +11,8 @@ git clone https://github.com/AstraLeap/resend-hermes-bridge.git
 cd resend-hermes-bridge
 ./scripts/setup.sh          # 交互式填写配置、生成密钥、可选安装 systemd/MCP
 
-# 方式一：本地运行
-.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8765
-
-# 方式二：Docker
-docker compose up -d
+systemctl --user enable --now hermes-send-proxy.service
+docker compose up -d --build
 ```
 
 测试本地链路（无需真实邮件）：
@@ -76,7 +73,7 @@ python -m bridge_admin drafts
 - Python 3.11 或更高版本
 - 已验证的 Resend 发信域名
 - Resend inbound Webhook
-- 已运行且启用 API 服务器的 Hermes gateway
+- 已安装并配置好消息平台的宿主机 Hermes
 - 可将 Resend Webhook 转发到本桥接层的公网 HTTPS 路由
 
 ## 配置
@@ -101,6 +98,8 @@ AI_NAME=Hermes
 
 通知渠道通过 `NOTIFICATION_TARGET` 设置，例如 `telegram`、`weixin`、`qqbot`、`wecom`、`discord`、`slack`、`signal`。对应平台的凭证在 Hermes（`~/.hermes/.env`）中配置，桥接层只负责把消息交给 `hermes send --to <target>`。
 
+Hermes 代理默认监听 `http://127.0.0.1:18765`。只需要在 `HERMES_PROXY_URL` 中记录这个 base URL，桥接层会从它派生 `/task` 和 `/send`。
+
 桥接层发送密钥请自行生成：
 
 ```sh
@@ -111,14 +110,14 @@ openssl rand -hex 32
 
 ## Hermes
 
-Hermes 必须暴露本地 OpenAI 兼容 API 服务器。桥接层从 `HERMES_HOME/config.yaml` 读取这些值；除非在 `.env` 中覆盖，否则 `HERMES_HOME` 默认为 `~/.hermes`：
+默认 Docker 部署下，桥接层不会直接在容器里运行真实 Hermes，也不会直接调用 Telegram/QQBot API。容器通过宿主机上的代理服务调用：
 
-```yaml
-API_SERVER_ENABLED: true
-API_SERVER_HOST: 127.0.0.1
-API_SERVER_PORT: 8642
-API_SERVER_KEY: ...
-```
+- `/task`：启动新的宿主机 Hermes Agent CLI 子会话处理邮件任务，并要求最终只返回 JSON。
+- `/send`：调用宿主机 `hermes send` 给 Telegram、QQBot 等渠道发消息；多媒体附件使用 `MEDIA:<path>`。
+
+Docker Compose 默认使用 host network，因此容器内访问 `127.0.0.1:18765` 时会连接到宿主机 Hermes 代理。桥接服务把 `./data` 映射到容器 `/app/data`，并把宿主机 Hermes cache 映射到 `/root/.hermes/cache`，这样 Hermes JSON 中返回的附件路径可以被桥接层读取和转发。
+
+如果 Hermes 也部署在 Docker 中，前提是 Hermes 容器和桥接容器共享同一批 bind mount 或命名卷。`BRIDGE_HOST_DATA_DIR` 要填写 Hermes 进程实际可见的桥接数据目录路径；`HERMES_HOST_HOME` 同理要对应 Hermes cache 在 Hermes 运行时中的可见路径。当前默认 compose 面向“宿主机 Hermes”场景。
 
 MCP 服务器可自动注册到 Hermes：
 
@@ -140,22 +139,16 @@ mcp_servers:
 
 仅当 `hermes` CLI 不在 `PATH`、`~/.local/bin` 或 `/usr/local/bin` 中时，才需要设置 `HERMES_SEND_BIN`。
 
-生成的回复/报告附件允许存放在 `GENERATED_ATTACHMENT_ROOTS`。若未设置，默认使用 `~/.hermes/cache`。
+生成的回复/报告附件允许存放在 `GENERATED_ATTACHMENT_ROOTS`。Docker 默认使用 `/root/.hermes/cache`，并通过路径映射对应宿主机 `~/.hermes/cache`。
 
 ## 本地开发
 
-安装依赖：
+安装宿主机辅助依赖。`.venv` 只用于 MCP server 和 Hermes host proxy，不用于运行桥接 Web 服务：
 
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-```
-
-本地运行桥接层：
-
-```sh
-uvicorn app:app --host 127.0.0.1 --port 8765
 ```
 
 运行测试：
@@ -164,11 +157,17 @@ uvicorn app:app --host 127.0.0.1 --port 8765
 ./scripts/test.sh
 ```
 
-测试脚本默认使用 `.test-venv`，因此不会修改运行时 `.venv`。
+测试脚本默认使用 `.test-venv`，因此不会修改 host proxy/MCP 使用的 `.venv`。
 
 ## 部署
 
-systemd 用户服务示例与部署清单请参见 [docs/deploy.md](docs/deploy.md)。
+```sh
+systemctl --user enable --now hermes-send-proxy.service
+docker compose up -d --build
+```
+
+反向代理只需要把公网 Resend webhook 路由转发到
+`http://127.0.0.1:8765/webhooks/resend`。
 
 ## 安全说明
 

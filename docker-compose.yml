@@ -2,15 +2,17 @@ services:
   resend-hermes-bridge:
     build: .
     container_name: resend-hermes-bridge
-    ports:
-      - "8765:8765"
+    network_mode: host
     env_file:
       - .env
+    environment:
+      BRIDGE_HOST_DATA_DIR: ${PWD}/data
+      HERMES_HOST_HOME: /home/karx/.hermes
+    volumes:
+      - ./data:/app/data
+      - /home/karx/.hermes/cache:/root/.hermes/cache:ro
+    command: ["uvicorn", "app:app", "--host", "127.0.0.1", "--port", "8765"]
     restart: unless-stopped
-    # On Linux, this lets the container reach the host via host.docker.internal
-    # so it can talk to the Hermes API server (default port 8642).
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
-    # If you prefer, uncomment the next line and remove ports/extra_hosts
-    # to let the bridge share the host network namespace directly.
-    # network_mode: host
+    # The host Hermes proxy listens on loopback, so the bridge shares the host
+    # network namespace and binds its webhook server to 127.0.0.1 for the host
+    # reverse proxy.

@@ -40,17 +40,16 @@ from db.operations import (  # noqa: F401
 )
 from db.state import EventStatus, InboundStatus, OutboundStatus, StepStatus  # noqa: F401
 from services.hermes_client import (  # noqa: F401
-    build_hermes_api_messages,
     build_hermes_task_prompt,
     coerce_bool,
     decode_common_json_escapes,
     fallback_notify_decision,
-    image_path_to_data_url,
     parse_json_decision,
     parse_loose_decision_object,
     parse_loose_string_value,
-    run_hermes_api_server_task,
     run_hermes_email_task,
+    run_hermes_proxy_task,
+    run_hermes_task,
     strip_json_code_fence,
 )
 from services.inbound_email import (  # noqa: F401
@@ -124,30 +123,6 @@ def _hermes_send_bin() -> Path:
 
 def _hermes_home() -> Path:
     return bridge_settings.hermes_home()
-
-
-def _strip_simple_yaml_value(value: str) -> str:
-    return bridge_settings.strip_simple_yaml_value(value)
-
-
-def _read_hermes_config() -> dict[str, str]:
-    return bridge_settings.read_hermes_config()
-
-
-def _require_hermes_config(config: dict[str, str], name: str) -> str:
-    return bridge_settings.require_hermes_config(config, name)
-
-
-def _api_server_enabled(config: dict[str, str]) -> bool:
-    return bridge_settings.api_server_enabled(config)
-
-
-def _hermes_api_url() -> str:
-    return bridge_settings.hermes_api_url()
-
-
-def _hermes_api_key() -> str:
-    return bridge_settings.hermes_api_key()
 
 
 SETTINGS = bridge_settings.load_settings()
@@ -252,6 +227,51 @@ def _path_is_relative_to(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _path_mapping_pairs() -> list[tuple[Path, Path]]:
+    pairs: list[tuple[Path, Path]] = []
+    if SETTINGS.bridge_host_data_dir is not None:
+        pairs.append(
+            (
+                SETTINGS.bridge_db.parent.expanduser().resolve(),
+                SETTINGS.bridge_host_data_dir.expanduser().resolve(),
+            )
+        )
+    if SETTINGS.hermes_host_home is not None:
+        pairs.append(
+            (
+                bridge_settings.hermes_home().expanduser().resolve(),
+                SETTINGS.hermes_host_home.expanduser().resolve(),
+            )
+        )
+    return pairs
+
+
+def _map_path_between_roots(path: Path, mappings: list[tuple[Path, Path]]) -> Path:
+    resolved = path.expanduser().resolve(strict=False)
+    for source_root, target_root in mappings:
+        try:
+            relative = resolved.relative_to(source_root)
+        except ValueError:
+            continue
+        return target_root / relative
+    return resolved
+
+
+def host_path_for_bridge_path(raw_path: str | Path) -> str:
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        return str(path)
+    return str(_map_path_between_roots(path, _path_mapping_pairs()))
+
+
+def bridge_path_for_host_path(raw_path: str | Path) -> str:
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        return str(path)
+    reverse_pairs = [(host_root, bridge_root) for bridge_root, host_root in _path_mapping_pairs()]
+    return str(_map_path_between_roots(path, reverse_pairs))
 
 
 def _validate_agent_attachment_paths(paths: list[str]) -> list[str]:
@@ -550,5 +570,3 @@ def unique_path(path: Path) -> Path:
         if not candidate.exists():
             return candidate
     raise RuntimeError(f"could not create unique path for {path}")
-
-

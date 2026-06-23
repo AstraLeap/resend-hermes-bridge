@@ -13,6 +13,7 @@ dist/
 
 state.db
 state.db-*
+data/
 attachments/
 bot_reply_contexts/
 mcp_email_drafts.json
