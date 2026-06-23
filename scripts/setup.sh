@@ -104,8 +104,10 @@ if command -v hermes >/dev/null 2>&1; then
     ok "Hermes CLI found: $(command -v hermes)"
 elif [[ -x "$HOME/.local/bin/hermes" ]]; then
     ok "Hermes CLI found: $HOME/.local/bin/hermes"
+elif [[ -x "$HOME/.hermes/bin/hermes" ]]; then
+    ok "Hermes CLI found: $HOME/.hermes/bin/hermes"
 else
-    warn "Hermes CLI not found on PATH, ~/.local/bin, or /usr/local/bin"
+    warn "Hermes CLI not found on PATH, ~/.local/bin, ~/.hermes/bin, or /usr/local/bin"
     warn "Make sure Hermes is installed before running the bridge"
 fi
 

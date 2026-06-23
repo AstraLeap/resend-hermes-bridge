@@ -105,7 +105,7 @@ AI_NAME=Hermes
 - 处理邮件任务时调用 `hermes chat --query <prompt> --quiet --source tool --yolo`，要求 Hermes 返回严格 JSON 决策。
 - 发送通知时调用 `hermes send --to <target>` 给 Telegram、QQBot 等渠道发消息；多媒体附件使用 `MEDIA:<path>`。
 
-因此本机必须已经安装并配置好 Hermes CLI，且 `hermes` 在 `PATH`、`~/.local/bin` 或 `/usr/local/bin` 中可用。如果 Hermes 可执行文件不在这些位置，请设置 `HERMES_SEND_BIN`。
+因此本机必须已经安装并配置好 Hermes CLI，且 `hermes` 在 `PATH`、`~/.local/bin`、`~/.hermes/bin` 或 `/usr/local/bin` 中可用。如果 Hermes 可执行文件不在这些位置，请设置 `HERMES_SEND_BIN`。
 
 桥接层不会把 bridge 自己的 `data/` 路径传给 Hermes。入站附件下载后保留在桥接层运行时目录 `data/attachments/<email_id>/`，需要时直接以原始路径传给 Hermes。Hermes 生成的文件可保存到 `~/.hermes/cache/resend-bridge/generated/`。
 

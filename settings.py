@@ -31,6 +31,9 @@ def hermes_send_bin() -> Path:
     home_bin = Path.home() / ".local" / "bin" / "hermes"
     if home_bin.exists():
         return home_bin
+    hermes_home_bin = Path.home() / ".hermes" / "bin" / "hermes"
+    if hermes_home_bin.exists():
+        return hermes_home_bin
     return Path("/usr/local/bin/hermes")
 
 
