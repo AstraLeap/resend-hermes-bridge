@@ -77,7 +77,13 @@ OWNER_FROM_LOCAL=mail
 AI_NAME=Hermes
 ```
 
+通知渠道通过 `NOTIFICATION_TARGET` 设置，例如 `telegram`、`weixin`、`qqbot`、`wecom`、`discord`、`slack`、`signal`。对应平台的凭证在 Hermes（`~/.hermes/.env`）中配置，桥接层只负责把消息交给 `hermes send --to <target>`。
+
 桥接层发送密钥请自行生成：
+
+```sh
+openssl rand -hex 32
+```
 
 ```sh
 openssl rand -hex 32
