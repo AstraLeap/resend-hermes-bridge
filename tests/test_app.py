@@ -363,9 +363,7 @@ def test_load_settings_uses_bridge_data_dir_env(monkeypatch, tmp_path):
     assert settings.attachment_dir == data_dir / "attachments"
     assert settings.mcp_drafts_file == data_dir / "mcp_email_drafts.json"
     assert settings.bot_reply_context_dir == data_dir / "bot_reply_contexts"
-    assert settings.hermes_bridge_cache_dir == (
-        app.bridge_settings.hermes_home() / "cache" / "resend-bridge"
-    )
+    assert settings.generated_attachment_roots == [data_dir / "generated"]
 
 
 def test_hermes_task_runs_direct_subprocess(monkeypatch, tmp_path):
@@ -428,14 +426,12 @@ def test_create_app_can_rebind_settings(tmp_path):
     original_settings = app.SETTINGS
     original_context_dir = app.BOT_REPLY_CONTEXT_DIR
     original_generated_roots = app.GENERATED_ATTACHMENT_ROOTS
-    original_cache_dir = app.HERMES_BRIDGE_CACHE_DIR
     custom = replace(
         app.SETTINGS,
         bridge_db=tmp_path / "state.db",
         attachment_dir=tmp_path / "attachments",
         bot_reply_context_dir=tmp_path / "contexts",
         generated_attachment_roots=[tmp_path / "generated"],
-        hermes_bridge_cache_dir=tmp_path / "cache" / "resend-bridge",
     )
 
     try:
@@ -447,7 +443,6 @@ def test_create_app_can_rebind_settings(tmp_path):
         app.SETTINGS = original_settings
         app.BOT_REPLY_CONTEXT_DIR = original_context_dir
         app.GENERATED_ATTACHMENT_ROOTS = original_generated_roots
-        app.HERMES_BRIDGE_CACHE_DIR = original_cache_dir
 
 
 def test_mcp_prunes_expired_drafts():

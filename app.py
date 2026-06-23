@@ -133,7 +133,6 @@ BOT_REPLY_CONTEXT_DIR = SETTINGS.bot_reply_context_dir
 HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9-]{1,100}$")
 MAX_OUTBOUND_ATTACHMENTS = 20
 GENERATED_ATTACHMENT_ROOTS = SETTINGS.generated_attachment_roots
-HERMES_BRIDGE_CACHE_DIR = SETTINGS.hermes_bridge_cache_dir
 
 
 @asynccontextmanager
@@ -144,12 +143,10 @@ async def lifespan(_app: FastAPI):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     global SETTINGS, BOT_REPLY_CONTEXT_DIR, GENERATED_ATTACHMENT_ROOTS
-    global HERMES_BRIDGE_CACHE_DIR
     if settings is not None:
         SETTINGS = settings
         BOT_REPLY_CONTEXT_DIR = settings.bot_reply_context_dir
         GENERATED_ATTACHMENT_ROOTS = settings.generated_attachment_roots
-        HERMES_BRIDGE_CACHE_DIR = settings.hermes_bridge_cache_dir
     from routers import health, send, webhooks
 
     fast_app = FastAPI(title="Resend Hermes Bridge", lifespan=lifespan)
@@ -219,7 +216,7 @@ def bridge_inbound_attachment_dir(email_id: str) -> Path:
 
 
 def agent_attachment_roots() -> list[Path]:
-    roots = [SETTINGS.attachment_dir, HERMES_BRIDGE_CACHE_DIR]
+    roots = [SETTINGS.attachment_dir]
     roots.extend(GENERATED_ATTACHMENT_ROOTS)
     return [root.expanduser().resolve() for root in roots]
 
@@ -478,7 +475,6 @@ def schedule_event_task(event: dict[str, Any], svix_id: str) -> None:
 
 async def startup() -> None:
     SETTINGS.attachment_dir.mkdir(parents=True, exist_ok=True)
-    HERMES_BRIDGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     for root in GENERATED_ATTACHMENT_ROOTS:
         root.mkdir(parents=True, exist_ok=True)
     BOT_REPLY_CONTEXT_DIR.mkdir(parents=True, exist_ok=True)

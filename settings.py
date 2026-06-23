@@ -38,10 +38,6 @@ def hermes_home() -> Path:
     return Path.home() / ".hermes"
 
 
-def hermes_bridge_cache_dir() -> Path:
-    return hermes_home() / "cache" / "resend-bridge"
-
-
 def bridge_data_dir() -> Path:
     return Path(os.getenv("BRIDGE_DATA_DIR", str(APP_DIR / "data"))).expanduser()
 
@@ -51,7 +47,7 @@ def env_bool(name: str, default: str = "false") -> bool:
 
 
 def generated_attachment_roots() -> list[Path]:
-    return [(hermes_bridge_cache_dir() / "generated").resolve()]
+    return [(bridge_data_dir() / "generated").resolve()]
 
 
 def validate_environment() -> list[str]:
@@ -87,7 +83,6 @@ class Settings:
     bot_from_local: str
     owner_from_local: str
     hermes_send_bin: Path
-    hermes_bridge_cache_dir: Path
     bridge_db: Path
     attachment_dir: Path
     mcp_drafts_file: Path
@@ -129,7 +124,6 @@ def load_settings() -> Settings:
         bot_from_local=require_env("BOT_FROM_LOCAL").lower(),
         owner_from_local=require_env("OWNER_FROM_LOCAL").lower(),
         hermes_send_bin=hermes_send_bin(),
-        hermes_bridge_cache_dir=hermes_bridge_cache_dir(),
         bridge_db=data_dir / "state.db",
         attachment_dir=data_dir / "attachments",
         mcp_drafts_file=data_dir / "mcp_email_drafts.json",

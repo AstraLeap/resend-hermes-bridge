@@ -107,7 +107,7 @@ AI_NAME=Hermes
 
 因此本机必须已经安装并配置好 Hermes CLI，且 `hermes` 在 `PATH`、`~/.local/bin`、`~/.hermes/bin` 或 `/usr/local/bin` 中可用。
 
-桥接层不会把 bridge 自己的 `data/` 路径传给 Hermes。入站附件下载后保留在桥接层运行时目录 `data/attachments/<email_id>/`，需要时直接以原始路径传给 Hermes。Hermes 生成的文件可保存到 `~/.hermes/cache/resend-bridge/generated/`。
+桥接层不会把 bridge 自己的 `data/` 路径传给 Hermes。入站附件下载后保留在桥接层运行时目录 `data/attachments/<email_id>/`，需要时直接以原始路径传给 Hermes。Hermes 生成的文件可保存到桥接层运行时目录 `data/generated/`。
 
 MCP 服务器可自动注册到 Hermes：
 
@@ -127,7 +127,7 @@ mcp_servers:
       RESEND_BRIDGE_URL: "http://127.0.0.1:8765"
 ```
 
-生成的回复/报告附件默认存放在 `~/.hermes/cache/resend-bridge/generated/`。
+生成的回复/报告附件默认存放在 `data/generated/`。
 
 ## 本地开发
 
