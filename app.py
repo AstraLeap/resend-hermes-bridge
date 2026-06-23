@@ -22,21 +22,10 @@ from pydantic import ValidationError
 from svix.webhooks import Webhook
 
 import bridge_settings
-import resend_client
+import clients.resend_client as resend_client
 from bridge_settings import APP_DIR, Settings
-from email_core import (
-    EmailValidationError,
-    clean_header_value,
-    email_address_list,
-    ensure_list,
-    outbound_recipient_summary,
-    parse_email_addresses,
-)
-from email_core import (
-    resolve_sender as resolve_email_sender,
-)
-from notices import render_inbound_email_notice, render_processing_result_notice
-from send_models import SendRequest
+from db.state import EventStatus, InboundStatus, OutboundStatus, StepStatus
+from models.send_models import SendRequest
 from services.hermes_client import (  # noqa: F401
     build_hermes_api_messages,
     build_hermes_task_prompt,
@@ -52,7 +41,18 @@ from services.hermes_client import (  # noqa: F401
     strip_json_code_fence,
 )
 from services.notification import notify_telegram
-from state import EventStatus, InboundStatus, OutboundStatus, StepStatus
+from utils.email_core import (
+    EmailValidationError,
+    clean_header_value,
+    email_address_list,
+    ensure_list,
+    outbound_recipient_summary,
+    parse_email_addresses,
+)
+from utils.email_core import (
+    resolve_sender as resolve_email_sender,
+)
+from utils.notices import render_inbound_email_notice, render_processing_result_notice
 
 bridge_settings.load_project_env()
 

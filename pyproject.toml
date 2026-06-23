@@ -1,5 +1,5 @@
 [tool.pytest.ini_options]
-testpaths = ["test_app.py"]
+testpaths = ["tests/test_app.py"]
 
 [tool.ruff]
 line-length = 100

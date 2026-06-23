@@ -14,12 +14,12 @@ import httpx
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-from email_core import (
+from utils.email_core import (
     clean_from_local,
     clean_header_value,
     parse_email_addresses,
 )
-from email_display import render_draft_markdown
+from utils.email_display import render_draft_markdown
 
 
 def _require_env(name: str) -> str:

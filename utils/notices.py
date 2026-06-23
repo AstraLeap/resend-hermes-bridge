@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from email_display import inbound_email_payload, render_email_markdown
+from utils.email_display import inbound_email_payload, render_email_markdown
 
 
 def render_inbound_email_notice(

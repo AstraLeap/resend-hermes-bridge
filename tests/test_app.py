@@ -34,8 +34,8 @@ sys.modules.setdefault("mcp", _mcp_module)
 sys.modules.setdefault("mcp.server", _mcp_server_module)
 sys.modules.setdefault("mcp.server.fastmcp", _mcp_fastmcp_module)
 
-import notices  # noqa: E402
 import resend_mcp_server  # noqa: E402
+import utils.notices as notices  # noqa: E402
 
 
 def test_parse_loose_reply_decision_with_unescaped_quotes():

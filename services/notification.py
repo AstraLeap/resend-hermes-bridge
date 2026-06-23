@@ -8,7 +8,7 @@ import httpx
 from dotenv import load_dotenv
 
 import app as bridge_app
-from state import OutboundStatus, StepStatus
+from db.state import OutboundStatus, StepStatus
 
 
 def notification_platform(target: str) -> str:

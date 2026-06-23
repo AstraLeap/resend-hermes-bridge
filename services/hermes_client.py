@@ -10,9 +10,9 @@ from typing import Any
 import httpx
 
 import app as bridge_app
-from prompt_templates import load_prompt_template
-from send_models import HermesDecision
-from state import OutboundStatus, StepStatus
+from db.state import OutboundStatus, StepStatus
+from models.send_models import HermesDecision
+from utils.prompt_templates import load_prompt_template
 
 
 def _build_hermes_task_instruction(prompt_record: dict[str, Any]) -> str:
