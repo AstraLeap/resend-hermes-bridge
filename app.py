@@ -267,6 +267,43 @@ def agent_attachment_roots() -> list[Path]:
     return [root.expanduser().resolve() for root in roots]
 
 
+def _hermes_cache_root() -> Path:
+    return (bridge_settings.hermes_home() / "cache").expanduser().resolve(strict=False)
+
+
+def _host_cache_owner() -> tuple[int, int] | None:
+    if SETTINGS.hermes_host_home is None:
+        return None
+    try:
+        stat_result = _hermes_cache_root().stat()
+    except OSError:
+        return None
+    return stat_result.st_uid, stat_result.st_gid
+
+
+def apply_host_cache_permissions(path: Path, *, directory: bool) -> None:
+    resolved = path.expanduser().resolve(strict=False)
+    cache_root = _hermes_cache_root()
+    if not _path_is_relative_to(resolved, cache_root):
+        return
+
+    owner = _host_cache_owner()
+    if owner is not None:
+        try:
+            os.chown(resolved, owner[0], owner[1])
+        except OSError:
+            LOGGER.warning("could not chown Hermes cache path %s", resolved)
+    try:
+        resolved.chmod(0o700 if directory else 0o600)
+    except OSError:
+        LOGGER.warning("could not chmod Hermes cache path %s", resolved)
+
+
+def prepare_hermes_cache_permissions() -> None:
+    for path in [HERMES_BRIDGE_CACHE_DIR, *GENERATED_ATTACHMENT_ROOTS]:
+        apply_host_cache_permissions(path, directory=True)
+
+
 def _require_mcp_draft_confirmation(raw: dict[str, Any]) -> None:
     try:
         draft_id = clean_header_value(raw.get("draft_id"), "draft_id", limit=64)
@@ -519,6 +556,7 @@ async def startup() -> None:
     BOT_REPLY_CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
     init_db()
     harden_storage_permissions()
+    prepare_hermes_cache_permissions()
     cleanup_old_history()
     schedule_recoverable_events()
     LOGGER.info(

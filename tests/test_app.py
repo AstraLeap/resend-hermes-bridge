@@ -548,6 +548,29 @@ def test_copy_attachment_to_hermes_cache_uses_resend_bridge_subdir(monkeypatch, 
     assert copied.read_text(encoding="utf-8") == "report"
 
 
+def test_prepare_hermes_cache_permissions_for_host_workspace(monkeypatch, tmp_path):
+    hermes_home = tmp_path / "hermes"
+    cache_root = hermes_home / "cache"
+    bridge_cache = cache_root / "resend-bridge"
+    generated_root = bridge_cache / "generated"
+    generated_root.mkdir(parents=True)
+    generated_root.chmod(0o755)
+
+    monkeypatch.setattr(app.bridge_settings, "hermes_home", lambda: hermes_home)
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(app.SETTINGS, hermes_host_home=tmp_path / "host-hermes"),
+    )
+    monkeypatch.setattr(app, "HERMES_BRIDGE_CACHE_DIR", bridge_cache)
+    monkeypatch.setattr(app, "GENERATED_ATTACHMENT_ROOTS", [generated_root])
+
+    app.prepare_hermes_cache_permissions()
+
+    assert bridge_cache.stat().st_mode & 0o777 == 0o700
+    assert generated_root.stat().st_mode & 0o777 == 0o700
+
+
 def test_create_app_can_rebind_settings(tmp_path):
     original_settings = app.SETTINGS
     original_user_agent = app.USER_AGENT
