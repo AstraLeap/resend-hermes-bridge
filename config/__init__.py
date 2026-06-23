@@ -1,9 +1,6 @@
-# Compatibility shim: settings now live in config.settings.
 from config.settings import (
     APP_DIR,
-    SEND_SECRET_PLACEHOLDERS,
     Settings,
-    api_server_enabled,
     env_bool,
     generated_attachment_roots,
     hermes_api_key,
@@ -16,15 +13,12 @@ from config.settings import (
     require_env,
     require_hermes_config,
     require_secret_env,
-    strip_simple_yaml_value,
     validate_environment,
 )
 
 __all__ = [
     "APP_DIR",
-    "SEND_SECRET_PLACEHOLDERS",
     "Settings",
-    "api_server_enabled",
     "env_bool",
     "generated_attachment_roots",
     "hermes_api_key",
@@ -37,6 +31,5 @@ __all__ = [
     "require_env",
     "require_hermes_config",
     "require_secret_env",
-    "strip_simple_yaml_value",
     "validate_environment",
 ]
