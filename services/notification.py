@@ -60,8 +60,7 @@ async def notify_telegram(
         for path in attachment_paths:
             if not path:
                 continue
-            host_path = bridge_app.host_path_for_bridge_path(path)
-            media_message = f"MEDIA:{host_path}"
+            media_message = f"MEDIA:{path}"
             media_process = await asyncio.create_subprocess_exec(
                 str(bridge_app.SETTINGS.hermes_send_bin),
                 "send",
@@ -74,11 +73,11 @@ async def notify_telegram(
             media_stdout, media_stderr = await asyncio.wait_for(
                 media_process.communicate(), timeout=90
             )
-            stdout_text += f"\n[MEDIA {host_path}]\n{media_stdout.decode(errors='replace')}"
-            stderr_text += f"\n[MEDIA {host_path}]\n{media_stderr.decode(errors='replace')}"
+            stdout_text += f"\n[MEDIA {path}]\n{media_stdout.decode(errors='replace')}"
+            stderr_text += f"\n[MEDIA {path}]\n{media_stderr.decode(errors='replace')}"
             if media_process.returncode != 0:
                 raise RuntimeError(
-                    f"failed to send {target} media {host_path}: "
+                    f"failed to send {target} media {path}: "
                     f"stdout={stdout_text} stderr={stderr_text}"
                 )
     except Exception as exc:

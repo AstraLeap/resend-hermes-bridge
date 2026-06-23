@@ -63,24 +63,6 @@ def bridge_data_dir() -> Path:
     return Path(os.getenv("BRIDGE_DATA_DIR", str(APP_DIR / "data"))).expanduser()
 
 
-def optional_path_env(name: str) -> Path | None:
-    value = os.getenv(name, "").strip()
-    if not value:
-        return None
-    return Path(value).expanduser()
-
-
-def hermes_proxy_url() -> str:
-    return os.getenv("HERMES_PROXY_URL", "http://127.0.0.1:18765").strip().rstrip("/")
-
-
-def hermes_proxy_secret() -> str:
-    return (
-        os.getenv("HERMES_PROXY_SECRET")
-        or os.getenv("RESEND_BRIDGE_SEND_SECRET", "")
-    ).strip()
-
-
 def env_bool(name: str, default: str = "false") -> bool:
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "y"}
 
@@ -117,9 +99,6 @@ def validate_environment() -> list[str]:
             f"hermes CLI not found at {send_bin}; install Hermes or set HERMES_SEND_BIN"
         )
 
-    if not hermes_proxy_url():
-        errors.append("HERMES_PROXY_URL is not set")
-
     return errors
 
 
@@ -132,9 +111,6 @@ class Settings:
     bot_from_local: str
     owner_from_local: str
     hermes_send_bin: Path
-    hermes_proxy_url: str
-    hermes_proxy_secret: str
-    hermes_host_home: Path | None
     hermes_bridge_cache_dir: Path
     bridge_db: Path
     attachment_dir: Path
@@ -179,9 +155,6 @@ def load_settings() -> Settings:
         bot_from_local=require_env("BOT_FROM_LOCAL").lower(),
         owner_from_local=require_env("OWNER_FROM_LOCAL").lower(),
         hermes_send_bin=hermes_send_bin(),
-        hermes_proxy_url=hermes_proxy_url(),
-        hermes_proxy_secret=hermes_proxy_secret(),
-        hermes_host_home=optional_path_env("HERMES_HOST_HOME"),
         hermes_bridge_cache_dir=hermes_bridge_cache_dir(),
         bridge_db=data_dir / "state.db",
         attachment_dir=data_dir / "attachments",

@@ -11,8 +11,7 @@ git clone https://github.com/AstraLeap/resend-hermes-bridge.git
 cd resend-hermes-bridge
 ./scripts/setup.sh          # 交互式填写配置、生成密钥、可选安装 systemd/MCP
 
-systemctl --user enable --now hermes-send-proxy.service
-docker compose up -d --build
+systemctl --user enable --now resend-hermes-bridge.service
 ```
 
 测试本地链路（无需真实邮件）：
@@ -96,9 +95,7 @@ OWNER_FROM_LOCAL=mail
 AI_NAME=Hermes
 ```
 
-通知渠道通过 `NOTIFICATION_TARGET` 设置，例如 `telegram`、`weixin`、`qqbot`、`wecom`、`discord`、`slack`、`signal`。对应平台的凭证在 Hermes（`~/.hermes/.env`）中配置，桥接层只负责把消息交给 `hermes send --to <target>`。
-
-Hermes 代理默认监听 `http://127.0.0.1:18765`。只需要在 `HERMES_PROXY_URL` 中记录这个 base URL，桥接层会从它派生 `/task` 和 `/send`。
+通知渠道通过 `NOTIFICATION_TARGET` 设置，例如 `telegram`、`weixin`、`qqbot`、`wecom`、`discord`、`slack`、`signal`。对应平台的凭证在 Hermes（`~/.hermes/.env`）中配置，桥接层直接调用本机 Hermes 的 `hermes send --to <target>`。
 
 桥接层发送密钥请自行生成：
 
@@ -110,16 +107,14 @@ openssl rand -hex 32
 
 ## Hermes
 
-默认 Docker 部署下，桥接层不会直接在容器里运行真实 Hermes，也不会直接调用 Telegram/QQBot API。容器通过宿主机上的代理服务调用：
+桥接层直接在本机运行 Hermes CLI：
 
-- `/task`：启动新的宿主机 Hermes Agent CLI 子会话处理邮件任务，并要求最终只返回 JSON。
-- `/send`：调用宿主机 `hermes send` 给 Telegram、QQBot 等渠道发消息；多媒体附件使用 `MEDIA:<path>`。
+- 处理邮件任务时调用 `hermes chat --query <prompt> --quiet --source tool --yolo`，要求 Hermes 返回严格 JSON 决策。
+- 发送通知时调用 `hermes send --to <target>` 给 Telegram、QQBot 等渠道发消息；多媒体附件使用 `MEDIA:<path>`。
 
-Docker Compose 默认使用 host network，因此容器内访问 `127.0.0.1:18765` 时会连接到宿主机 Hermes 代理。桥接服务把 `./data` 映射到容器 `/app/data`，并把宿主机 Hermes cache 映射到 `/root/.hermes/cache`。
+因此本机必须已经安装并配置好 Hermes CLI，且 `hermes` 在 `PATH`、`~/.local/bin` 或 `/usr/local/bin` 中可用。如果 Hermes 可执行文件不在这些位置，请设置 `HERMES_SEND_BIN`。
 
 桥接层不会把 bridge 自己的 `data/` 路径传给 Hermes。入站附件下载后会复制到 Hermes cache 下的 `resend-bridge/inbound/<email_id>/`，提示 Hermes 生成的文件保存到 `resend-bridge/generated/`。Hermes 对输入/输出附件的读写都发生在 `~/.hermes/cache/resend-bridge/` 子目录内。
-
-如果 Hermes 也部署在 Docker 中，前提是 Hermes 容器和桥接容器共享同一份 Hermes cache bind mount 或命名卷。两个容器可以把这份 cache 挂到相同路径；如果 Hermes 运行时看到的 `~/.hermes` 路径不同，用 `HERMES_HOST_HOME` 告诉 bridge 如何把容器内路径翻译成 Hermes 运行时可见路径。
 
 MCP 服务器可自动注册到 Hermes：
 
@@ -139,18 +134,22 @@ mcp_servers:
       RESEND_BRIDGE_URL: "http://127.0.0.1:8765"
 ```
 
-仅当 `hermes` CLI 不在 `PATH`、`~/.local/bin` 或 `/usr/local/bin` 中时，才需要设置 `HERMES_SEND_BIN`。
-
-生成的回复/报告附件允许存放在 `GENERATED_ATTACHMENT_ROOTS`。Docker 默认使用 `/root/.hermes/cache/resend-bridge/generated`，并通过 `HERMES_HOST_HOME` 映射到 Hermes 运行时的 cache 路径。
+生成的回复/报告附件允许存放在 `GENERATED_ATTACHMENT_ROOTS`。默认使用 `~/.hermes/cache/resend-bridge/generated`。
 
 ## 本地开发
 
-安装宿主机辅助依赖。`.venv` 只用于 MCP server 和 Hermes host proxy，不用于运行桥接 Web 服务：
+创建虚拟环境并安装依赖：
 
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
+```
+
+本地运行桥接服务：
+
+```sh
+uvicorn app:app --host 127.0.0.1 --port 8765
 ```
 
 运行测试：
@@ -159,14 +158,23 @@ pip install -r requirements.txt
 ./scripts/test.sh
 ```
 
-测试脚本默认使用 `.test-venv`，因此不会修改 host proxy/MCP 使用的 `.venv`。
+测试脚本默认使用 `.test-venv`，因此不会修改开发使用的 `.venv`。
 
 ## 部署
 
+推荐通过 systemd 用户服务运行：
+
 ```sh
-systemctl --user enable --now hermes-send-proxy.service
-docker compose up -d --build
+systemctl --user enable --now resend-hermes-bridge.service
 ```
+
+也可以手动运行：
+
+```sh
+/path/to/resend-hermes-bridge/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8765
+```
+
+手动部署时可参考 `scripts/resend-hermes-bridge.service` 模板，将路径替换为实际路径后复制到 `~/.config/systemd/user/`。
 
 反向代理只需要把公网 Resend webhook 路由转发到
 `http://127.0.0.1:8765/webhooks/resend`。

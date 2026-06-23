@@ -1,0 +1,19 @@
+# Copy this file to ~/.config/systemd/user/resend-hermes-bridge.service
+# and update the paths below to match your installation.
+
+[Unit]
+Description=Resend Hermes Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/resend-hermes-bridge
+Environment="PATH=/home/your-user/.hermes/bin:/home/your-user/.hermes/hermes-agent/venv/bin:/home/your-user/.hermes/hermes-agent/node_modules/.bin:/home/your-user/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+EnvironmentFile=/path/to/resend-hermes-bridge/.env
+ExecStart=/path/to/resend-hermes-bridge/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8765
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

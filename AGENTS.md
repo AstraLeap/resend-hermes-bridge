@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository is a Python 3.11 FastAPI bridge for Resend inbound email and a local Hermes runtime. The main ASGI app and orchestration logic live in `app.py`; `manage.py` provides administrative CLI entry points. HTTP routes are split under `routers/`, domain services under `services/`, persistence helpers under `db/`, and shared email/notice utilities under `utils/`. Hermes task instructions are stored in `prompts/hermes_email_task.md`. Tests currently live in `tests/test_app.py`. Deployment and local helper scripts are in `scripts/`, with Docker configuration in `Dockerfile` and `docker-compose.yml`.
+This repository is a Python 3.11 FastAPI bridge for Resend inbound email and a local Hermes runtime. The main ASGI app and orchestration logic live in `app.py`; `manage.py` provides administrative CLI entry points. HTTP routes are split under `routers/`, domain services under `services/`, persistence helpers under `db/`, and shared email/notice utilities under `utils/`. Hermes task instructions are stored in `prompts/hermes_email_task.md`. Tests currently live in `tests/test_app.py`. Deployment and local helper scripts are in `scripts/`, including a systemd service template for host-native installation.
 
 ## Build, Test, and Development Commands
 
@@ -10,7 +10,8 @@ This repository is a Python 3.11 FastAPI bridge for Resend inbound email and a l
 - `pip install -r requirements.txt -r requirements-dev.txt`: install runtime, test, and lint dependencies.
 - `./scripts/test.sh`: run Ruff and pytest using `.test-venv`; this is the preferred pre-commit check.
 - `python scripts/send_test_webhook.py`: exercise the local webhook path without a real inbound email.
-- `docker compose up -d --build`: build and run the bridge bound to `127.0.0.1:8765`.
+- `uvicorn app:app --host 127.0.0.1 --port 8765`: run the bridge directly on the host.
+- `systemctl --user enable --now resend-hermes-bridge.service`: run the bridge as a systemd user service.
 
 ## Coding Style & Naming Conventions
 

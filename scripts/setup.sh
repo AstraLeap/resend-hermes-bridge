@@ -117,14 +117,14 @@ else
     warn "Make sure Hermes is installed before running the bridge"
 fi
 
-# Optional: install Hermes host proxy systemd user service
+# Optional: install bridge systemd user service
 if command -v systemctl >/dev/null 2>&1; then
-    read -rp "Install Hermes host proxy systemd user service? [y/N] " install_proxy
-    if [[ "$install_proxy" =~ ^[Yy]$ ]]; then
+    read -rp "Install resend-hermes-bridge systemd user service? [y/N] " install_bridge
+    if [[ "$install_bridge" =~ ^[Yy]$ ]]; then
         mkdir -p "$HOME/.config/systemd/user"
-        cat > "$HOME/.config/systemd/user/hermes-send-proxy.service" <<EOF
+        cat > "$HOME/.config/systemd/user/resend-hermes-bridge.service" <<EOF
 [Unit]
-Description=Hermes host proxy for Resend Hermes Bridge
+Description=Resend Hermes Bridge
 After=network-online.target
 Wants=network-online.target
 
@@ -132,10 +132,8 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=$ROOT_DIR
 Environment="PATH=$HOME/.hermes/bin:$HOME/.hermes/hermes-agent/venv/bin:$HOME/.hermes/hermes-agent/node_modules/.bin:$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-Environment="HERMES_HOME=$HOME/.hermes"
-Environment="HERMES_PROXY_HOST=127.0.0.1"
-Environment="HERMES_PROXY_SECRET=$bridge_secret"
-ExecStart=$VENV_DIR/bin/python scripts/hermes_send_proxy.py
+EnvironmentFile=$ENV_FILE
+ExecStart=$VENV_DIR/bin/uvicorn app:app --host 127.0.0.1 --port 8765
 Restart=always
 RestartSec=5
 
@@ -143,7 +141,7 @@ RestartSec=5
 WantedBy=default.target
 EOF
         systemctl --user daemon-reload
-        ok "Installed host proxy service. Start with: systemctl --user enable --now hermes-send-proxy.service"
+        ok "Installed bridge service. Start with: systemctl --user enable --now resend-hermes-bridge.service"
     fi
 fi
 
@@ -155,5 +153,8 @@ if [[ "$install_mcp" =~ ^[Yy]$ ]]; then
 fi
 
 ok "Setup complete. Edit $ENV_FILE if needed, then start the bridge."
-info "Start the host proxy: systemctl --user enable --now hermes-send-proxy.service"
-info "Run the bridge with Docker: docker compose up -d --build"
+info "Run the bridge directly:"
+info "  $VENV_DIR/bin/uvicorn app:app --host 127.0.0.1 --port 8765"
+info ""
+info "Or run as a systemd user service:"
+info "  systemctl --user enable --now resend-hermes-bridge.service"

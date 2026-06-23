@@ -276,63 +276,6 @@ def test_notify_telegram_uses_hermes_send_by_default(monkeypatch, tmp_path):
     assert steps[-1]["step"] == "telegram_notify"
 
 
-def test_notify_media_uses_host_path_for_hermes_send(monkeypatch, tmp_path):
-    commands = []
-    container_home = tmp_path / "container" / "hermes"
-    host_home = tmp_path / "host" / "hermes"
-    attachment = (
-        container_home / "cache" / "resend-bridge" / "generated" / "chart.png"
-    )
-    hermes_bin = tmp_path / "hermes"
-    attachment.parent.mkdir(parents=True)
-    attachment.write_bytes(b"\x89PNG\r\n\x1a\n")
-    hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
-    hermes_bin.chmod(0o755)
-
-    class FakeProcess:
-        returncode = 0
-
-        async def communicate(self):
-            return b"sent\n", b""
-
-    async def fake_create_subprocess_exec(*args, **kwargs):
-        commands.append(args)
-        return FakeProcess()
-
-    monkeypatch.setenv("HERMES_HOME", str(container_home))
-    monkeypatch.setattr(app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-    monkeypatch.setattr(
-        app,
-        "SETTINGS",
-        replace(
-            app.SETTINGS,
-            notification_target="qqbot",
-            hermes_send_bin=hermes_bin,
-            hermes_host_home=host_home,
-        ),
-    )
-    monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 99)
-    monkeypatch.setattr(app, "update_outbound_message", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(app, "record_processing_step", lambda **_kwargs: None)
-
-    asyncio.run(
-        app.notify_telegram(
-            "done",
-            email_id="email-1",
-            attachment_paths=[str(attachment)],
-        )
-    )
-
-    assert commands[0] == (str(hermes_bin), "send", "--to", "qqbot", "done")
-    assert commands[1] == (
-        str(hermes_bin),
-        "send",
-        "--to",
-        "qqbot",
-        f"MEDIA:{host_home / 'cache' / 'resend-bridge' / 'generated' / 'chart.png'}",
-    )
-
-
 def test_reply_notice_shows_only_sent_email_without_summary_footer():
     notice = notices.render_processing_result_notice(
         "已通过 Resend 自动回复。",
@@ -433,106 +376,60 @@ def test_load_settings_uses_bridge_data_dir_env(monkeypatch, tmp_path):
     )
 
 
-def test_hermes_proxy_maps_host_and_bridge_paths(monkeypatch, tmp_path):
-    container_home = tmp_path / "container" / "hermes"
-    host_home = tmp_path / "host" / "hermes"
-    container_cache_dir = container_home / "cache" / "resend-bridge"
-    host_cache_dir = host_home / "cache" / "resend-bridge"
-    container_cache_file = container_cache_dir / "generated" / "chart.png"
-    host_cache_file = host_cache_dir / "generated" / "chart.png"
-    downloaded_file = container_cache_dir / "inbound" / "email-1" / "report.txt"
-    downloaded_file.parent.mkdir(parents=True)
-    downloaded_file.write_text("report", encoding="utf-8")
-    container_cache_file.parent.mkdir(parents=True)
-    host_cache_file.parent.mkdir(parents=True)
-    monkeypatch.setenv("HERMES_HOME", str(container_home))
-
-    captured = {}
-
-    class FakeResponse:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {
-                "stdout": json.dumps(
-                    {
-                        "action": "notify",
-                        "executed_task": True,
-                        "owner_report": "done",
-                        "owner_report_attachments": [str(host_cache_file)],
-                    }
-                ),
-                "stderr": "session_id: test-session",
-                "returncode": 0,
-            }
-
-    class FakeAsyncClient:
-        def __init__(self, *args, **kwargs):
-            captured["timeout"] = kwargs.get("timeout")
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-        async def post(self, url, *, headers, json):
-            captured["url"] = url
-            captured["headers"] = headers
-            captured["json"] = json
-            return FakeResponse()
-
-    custom_settings = replace(
-        app.SETTINGS,
-        generated_attachment_roots=[container_cache_dir / "generated"],
-        hermes_bridge_cache_dir=container_cache_dir,
-        hermes_host_home=host_home,
-        hermes_proxy_url="http://127.0.0.1:18765",
-        hermes_proxy_secret="secret",
-        hermes_timeout_seconds=30,
+def test_hermes_task_runs_direct_subprocess(monkeypatch, tmp_path):
+    commands = []
+    hermes_bin = tmp_path / "hermes"
+    hermes_bin.write_text(
+        '#!/bin/sh\necho \'{"action":"notify","executed_task":true,"owner_report":"done"}\'',
+        encoding="utf-8",
     )
-    monkeypatch.setattr(app, "SETTINGS", custom_settings)
+    hermes_bin.chmod(0o755)
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b'{"action":"notify","executed_task":true,"owner_report":"done"}', b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        commands.append(args)
+        return FakeProcess()
+
+    monkeypatch.setattr(app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr(
-        app, "GENERATED_ATTACHMENT_ROOTS", custom_settings.generated_attachment_roots
+        app,
+        "SETTINGS",
+        replace(app.SETTINGS, hermes_send_bin=hermes_bin, hermes_timeout_seconds=30),
     )
-    monkeypatch.setattr(
-        app, "HERMES_BRIDGE_CACHE_DIR", custom_settings.hermes_bridge_cache_dir
-    )
-    monkeypatch.setattr(app.httpx, "AsyncClient", FakeAsyncClient)
     monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 1)
     monkeypatch.setattr(app, "update_outbound_message", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(app, "record_hermes_decision", lambda **_kwargs: None)
     monkeypatch.setattr(app, "record_processing_step", lambda **_kwargs: None)
 
     decision = asyncio.run(
-        app.run_hermes_proxy_task(
+        app.run_hermes_task(
             {
                 "task": "test",
                 "sender": "sender@example.com",
                 "email": {"text_preview": "hello"},
                 "attachments": [],
-                "downloaded_files": [
-                    {
-                        "filename": "report.txt",
-                        "relevant": True,
-                        "local_path": str(downloaded_file),
-                    }
-                ],
+                "downloaded_files": [],
             },
             "email-1",
             "subject",
         )
     )
 
-    assert captured["url"] == "http://127.0.0.1:18765/task"
-    assert captured["headers"]["Authorization"] == "Bearer secret"
-    assert (
-        str(host_cache_dir / "inbound" / "email-1" / "report.txt")
-        in captured["json"]["prompt"]
-    )
-    assert str(host_cache_dir / "generated") in captured["json"]["prompt"]
-    assert decision["owner_report_attachments"] == [str(container_cache_file)]
+    assert commands[0][0] == str(hermes_bin)
+    assert "chat" in commands[0]
+    assert "--query" in commands[0]
+    assert "--quiet" in commands[0]
+    assert "--source" in commands[0]
+    assert "tool" in commands[0]
+    assert "--yolo" in commands[0]
+    assert decision["action"] == "notify"
+    assert decision["executed_task"] is True
+    assert decision["owner_report"] == "done"
 
 
 def test_copy_attachment_to_hermes_cache_uses_resend_bridge_subdir(monkeypatch, tmp_path):
@@ -546,29 +443,6 @@ def test_copy_attachment_to_hermes_cache_uses_resend_bridge_subdir(monkeypatch, 
 
     assert copied == cache_dir / "inbound" / "email-1" / "report.txt"
     assert copied.read_text(encoding="utf-8") == "report"
-
-
-def test_prepare_hermes_cache_permissions_for_host_workspace(monkeypatch, tmp_path):
-    hermes_home = tmp_path / "hermes"
-    cache_root = hermes_home / "cache"
-    bridge_cache = cache_root / "resend-bridge"
-    generated_root = bridge_cache / "generated"
-    generated_root.mkdir(parents=True)
-    generated_root.chmod(0o755)
-
-    monkeypatch.setattr(app.bridge_settings, "hermes_home", lambda: hermes_home)
-    monkeypatch.setattr(
-        app,
-        "SETTINGS",
-        replace(app.SETTINGS, hermes_host_home=tmp_path / "host-hermes"),
-    )
-    monkeypatch.setattr(app, "HERMES_BRIDGE_CACHE_DIR", bridge_cache)
-    monkeypatch.setattr(app, "GENERATED_ATTACHMENT_ROOTS", [generated_root])
-
-    app.prepare_hermes_cache_permissions()
-
-    assert bridge_cache.stat().st_mode & 0o777 == 0o700
-    assert generated_root.stat().st_mode & 0o777 == 0o700
 
 
 def test_create_app_can_rebind_settings(tmp_path):

@@ -48,7 +48,6 @@ from services.hermes_client import (  # noqa: F401
     parse_loose_decision_object,
     parse_loose_string_value,
     run_hermes_email_task,
-    run_hermes_proxy_task,
     run_hermes_task,
     strip_json_code_fence,
 )
@@ -217,46 +216,6 @@ def _path_is_relative_to(path: Path, root: Path) -> bool:
     return True
 
 
-def _path_mapping_pairs() -> list[tuple[Path, Path]]:
-    pairs: list[tuple[Path, Path]] = []
-    if SETTINGS.hermes_host_home is not None:
-        pairs.append(
-            (
-                bridge_settings.hermes_home().expanduser().resolve(),
-                SETTINGS.hermes_host_home.expanduser().resolve(),
-            )
-        )
-    return pairs
-
-
-def _map_path_between_roots(path: Path, mappings: list[tuple[Path, Path]]) -> Path:
-    resolved = path.expanduser().resolve(strict=False)
-    for source_root, target_root in mappings:
-        try:
-            relative = resolved.relative_to(source_root)
-        except ValueError:
-            continue
-        return target_root / relative
-    return resolved
-
-
-def host_path_for_bridge_path(raw_path: str | Path) -> str:
-    path = Path(raw_path).expanduser()
-    if not path.is_absolute():
-        return str(path)
-    return str(_map_path_between_roots(path, _path_mapping_pairs()))
-
-
-def bridge_path_for_host_path(raw_path: str | Path) -> str:
-    path = Path(raw_path).expanduser()
-    if not path.is_absolute():
-        return str(path)
-    reverse_pairs = [
-        (host_root, bridge_root) for bridge_root, host_root in _path_mapping_pairs()
-    ]
-    return str(_map_path_between_roots(path, reverse_pairs))
-
-
 def hermes_bridge_inbound_dir(email_id: str) -> Path:
     return HERMES_BRIDGE_CACHE_DIR / "inbound" / safe_filename(email_id)
 
@@ -267,41 +226,12 @@ def agent_attachment_roots() -> list[Path]:
     return [root.expanduser().resolve() for root in roots]
 
 
-def _hermes_cache_root() -> Path:
-    return (bridge_settings.hermes_home() / "cache").expanduser().resolve(strict=False)
-
-
-def _host_cache_owner() -> tuple[int, int] | None:
-    if SETTINGS.hermes_host_home is None:
-        return None
-    try:
-        stat_result = _hermes_cache_root().stat()
-    except OSError:
-        return None
-    return stat_result.st_uid, stat_result.st_gid
-
-
 def apply_host_cache_permissions(path: Path, *, directory: bool) -> None:
     resolved = path.expanduser().resolve(strict=False)
-    cache_root = _hermes_cache_root()
-    if not _path_is_relative_to(resolved, cache_root):
-        return
-
-    owner = _host_cache_owner()
-    if owner is not None:
-        try:
-            os.chown(resolved, owner[0], owner[1])
-        except OSError:
-            LOGGER.warning("could not chown Hermes cache path %s", resolved)
     try:
         resolved.chmod(0o700 if directory else 0o600)
     except OSError:
         LOGGER.warning("could not chmod Hermes cache path %s", resolved)
-
-
-def prepare_hermes_cache_permissions() -> None:
-    for path in [HERMES_BRIDGE_CACHE_DIR, *GENERATED_ATTACHMENT_ROOTS]:
-        apply_host_cache_permissions(path, directory=True)
 
 
 def _require_mcp_draft_confirmation(raw: dict[str, Any]) -> None:
@@ -556,7 +486,6 @@ async def startup() -> None:
     BOT_REPLY_CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
     init_db()
     harden_storage_permissions()
-    prepare_hermes_cache_permissions()
     cleanup_old_history()
     schedule_recoverable_events()
     LOGGER.info(
