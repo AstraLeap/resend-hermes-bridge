@@ -115,9 +115,11 @@ openssl rand -hex 32
 - `/task`：启动新的宿主机 Hermes Agent CLI 子会话处理邮件任务，并要求最终只返回 JSON。
 - `/send`：调用宿主机 `hermes send` 给 Telegram、QQBot 等渠道发消息；多媒体附件使用 `MEDIA:<path>`。
 
-Docker Compose 默认使用 host network，因此容器内访问 `127.0.0.1:18765` 时会连接到宿主机 Hermes 代理。桥接服务把 `./data` 映射到容器 `/app/data`，并把宿主机 Hermes cache 映射到 `/root/.hermes/cache`，这样 Hermes JSON 中返回的附件路径可以被桥接层读取和转发。
+Docker Compose 默认使用 host network，因此容器内访问 `127.0.0.1:18765` 时会连接到宿主机 Hermes 代理。桥接服务把 `./data` 映射到容器 `/app/data`，并把宿主机 Hermes cache 映射到 `/root/.hermes/cache`。
 
-如果 Hermes 也部署在 Docker 中，前提是 Hermes 容器和桥接容器共享同一批 bind mount 或命名卷。`BRIDGE_HOST_DATA_DIR` 要填写 Hermes 进程实际可见的桥接数据目录路径；`HERMES_HOST_HOME` 同理要对应 Hermes cache 在 Hermes 运行时中的可见路径。当前默认 compose 面向“宿主机 Hermes”场景。
+桥接层不会把 bridge 自己的 `data/` 路径传给 Hermes。入站附件下载后会复制到 Hermes cache 下的 `resend-bridge/inbound/<email_id>/`，提示 Hermes 生成的文件保存到 `resend-bridge/generated/`。Hermes 对输入/输出附件的读写都发生在 `~/.hermes/cache/resend-bridge/` 子目录内。
+
+如果 Hermes 也部署在 Docker 中，前提是 Hermes 容器和桥接容器共享同一份 Hermes cache bind mount 或命名卷。两个容器可以把这份 cache 挂到相同路径；如果 Hermes 运行时看到的 `~/.hermes` 路径不同，用 `HERMES_HOST_HOME` 告诉 bridge 如何把容器内路径翻译成 Hermes 运行时可见路径。
 
 MCP 服务器可自动注册到 Hermes：
 
@@ -139,7 +141,7 @@ mcp_servers:
 
 仅当 `hermes` CLI 不在 `PATH`、`~/.local/bin` 或 `/usr/local/bin` 中时，才需要设置 `HERMES_SEND_BIN`。
 
-生成的回复/报告附件允许存放在 `GENERATED_ATTACHMENT_ROOTS`。Docker 默认使用 `/root/.hermes/cache`，并通过路径映射对应宿主机 `~/.hermes/cache`。
+生成的回复/报告附件允许存放在 `GENERATED_ATTACHMENT_ROOTS`。Docker 默认使用 `/root/.hermes/cache/resend-bridge/generated`，并通过 `HERMES_HOST_HOME` 映射到 Hermes 运行时的 cache 路径。
 
 ## 本地开发
 

@@ -138,9 +138,7 @@ def normalize_outbound_attachments(
                 status_code=400,
                 detail="auto-reply attachments require auto_reply_email_id",
             )
-        inbound_root = (
-            bridge_app.SETTINGS.attachment_dir / bridge_app.safe_filename(email_id)
-        ).resolve()
+        inbound_root = bridge_app.hermes_bridge_inbound_dir(email_id).resolve()
 
     for index, item in enumerate(items):
         if isinstance(item, str):
@@ -186,7 +184,9 @@ def normalize_outbound_attachments(
                 path = bridge_app.APP_DIR / path
             path = path.resolve()
             if inbound_root is not None:
-                allowed_roots = [inbound_root] + bridge_app.GENERATED_ATTACHMENT_ROOTS
+                allowed_roots = [inbound_root] + [
+                    root.resolve() for root in bridge_app.GENERATED_ATTACHMENT_ROOTS
+                ]
                 if not any(
                     bridge_app._path_is_relative_to(path, root)
                     for root in allowed_roots

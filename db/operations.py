@@ -218,6 +218,7 @@ def harden_storage_permissions() -> None:
     storage_paths: list[tuple[Path, int]] = [
         (bridge_app.SETTINGS.bridge_db, 0o600),
         (bridge_app.SETTINGS.attachment_dir, 0o700),
+        (bridge_app.HERMES_BRIDGE_CACHE_DIR, 0o700),
         (bridge_app.BOT_REPLY_CONTEXT_DIR, 0o700),
     ]
     for path, mode in storage_paths:

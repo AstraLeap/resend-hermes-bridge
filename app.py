@@ -54,6 +54,7 @@ from services.hermes_client import (  # noqa: F401
 )
 from services.inbound_email import (  # noqa: F401
     build_activity_summary,
+    copy_attachment_to_hermes_cache,
     decide_bot_email,
     download_relevant_attachments,
     email_summary,
@@ -150,6 +151,7 @@ BOT_REPLY_CONTEXT_DIR = SETTINGS.bot_reply_context_dir
 HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9-]{1,100}$")
 MAX_OUTBOUND_ATTACHMENTS = 20
 GENERATED_ATTACHMENT_ROOTS = SETTINGS.generated_attachment_roots
+HERMES_BRIDGE_CACHE_DIR = SETTINGS.hermes_bridge_cache_dir
 
 
 @asynccontextmanager
@@ -160,11 +162,13 @@ async def lifespan(_app: FastAPI):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     global SETTINGS, USER_AGENT, BOT_REPLY_CONTEXT_DIR, GENERATED_ATTACHMENT_ROOTS
+    global HERMES_BRIDGE_CACHE_DIR
     if settings is not None:
         SETTINGS = settings
         USER_AGENT = settings.user_agent
         BOT_REPLY_CONTEXT_DIR = settings.bot_reply_context_dir
         GENERATED_ATTACHMENT_ROOTS = settings.generated_attachment_roots
+        HERMES_BRIDGE_CACHE_DIR = settings.hermes_bridge_cache_dir
     from routers import health, send, webhooks
 
     fast_app = FastAPI(title="Resend Hermes Bridge", lifespan=lifespan)
@@ -231,13 +235,6 @@ def _path_is_relative_to(path: Path, root: Path) -> bool:
 
 def _path_mapping_pairs() -> list[tuple[Path, Path]]:
     pairs: list[tuple[Path, Path]] = []
-    if SETTINGS.bridge_host_data_dir is not None:
-        pairs.append(
-            (
-                SETTINGS.bridge_db.parent.expanduser().resolve(),
-                SETTINGS.bridge_host_data_dir.expanduser().resolve(),
-            )
-        )
     if SETTINGS.hermes_host_home is not None:
         pairs.append(
             (
@@ -270,12 +267,24 @@ def bridge_path_for_host_path(raw_path: str | Path) -> str:
     path = Path(raw_path).expanduser()
     if not path.is_absolute():
         return str(path)
-    reverse_pairs = [(host_root, bridge_root) for bridge_root, host_root in _path_mapping_pairs()]
+    reverse_pairs = [
+        (host_root, bridge_root) for bridge_root, host_root in _path_mapping_pairs()
+    ]
     return str(_map_path_between_roots(path, reverse_pairs))
 
 
+def hermes_bridge_inbound_dir(email_id: str) -> Path:
+    return HERMES_BRIDGE_CACHE_DIR / "inbound" / safe_filename(email_id)
+
+
+def agent_attachment_roots() -> list[Path]:
+    roots = [HERMES_BRIDGE_CACHE_DIR]
+    roots.extend(GENERATED_ATTACHMENT_ROOTS)
+    return [root.expanduser().resolve() for root in roots]
+
+
 def _validate_agent_attachment_paths(paths: list[str]) -> list[str]:
-    allowed_roots = [SETTINGS.attachment_dir.resolve()] + GENERATED_ATTACHMENT_ROOTS
+    allowed_roots = agent_attachment_roots()
     valid: list[str] = []
     for raw in paths:
         if not raw:
@@ -542,6 +551,9 @@ def schedule_event_task(event: dict[str, Any], svix_id: str) -> None:
 
 async def startup() -> None:
     SETTINGS.attachment_dir.mkdir(parents=True, exist_ok=True)
+    HERMES_BRIDGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    for root in GENERATED_ATTACHMENT_ROOTS:
+        root.mkdir(parents=True, exist_ok=True)
     BOT_REPLY_CONTEXT_DIR.mkdir(parents=True, exist_ok=True)
     init_db()
     harden_storage_permissions()

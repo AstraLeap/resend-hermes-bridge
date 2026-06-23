@@ -247,7 +247,9 @@ def test_notify_telegram_uses_hermes_send_by_default(monkeypatch, tmp_path):
         commands.append(args)
         return FakeProcess()
 
-    monkeypatch.setattr(app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(
+        app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
     monkeypatch.setattr(
         app,
         "SETTINGS",
@@ -275,9 +277,11 @@ def test_notify_telegram_uses_hermes_send_by_default(monkeypatch, tmp_path):
 
 def test_notify_media_uses_host_path_for_hermes_send(monkeypatch, tmp_path):
     commands = []
-    container_data = tmp_path / "container" / "data"
-    host_data = tmp_path / "host" / "data"
-    attachment = container_data / "attachments" / "email-1" / "chart.png"
+    container_home = tmp_path / "container" / "hermes"
+    host_home = tmp_path / "host" / "hermes"
+    attachment = (
+        container_home / "cache" / "resend-bridge" / "generated" / "chart.png"
+    )
     hermes_bin = tmp_path / "hermes"
     attachment.parent.mkdir(parents=True)
     attachment.write_bytes(b"\x89PNG\r\n\x1a\n")
@@ -294,6 +298,7 @@ def test_notify_media_uses_host_path_for_hermes_send(monkeypatch, tmp_path):
         commands.append(args)
         return FakeProcess()
 
+    monkeypatch.setenv("HERMES_HOME", str(container_home))
     monkeypatch.setattr(app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr(
         app,
@@ -302,8 +307,7 @@ def test_notify_media_uses_host_path_for_hermes_send(monkeypatch, tmp_path):
             app.SETTINGS,
             notification_target="qqbot",
             hermes_send_bin=hermes_bin,
-            bridge_db=container_data / "state.db",
-            bridge_host_data_dir=host_data,
+            hermes_host_home=host_home,
         ),
     )
     monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 99)
@@ -324,7 +328,7 @@ def test_notify_media_uses_host_path_for_hermes_send(monkeypatch, tmp_path):
         "send",
         "--to",
         "qqbot",
-        f"MEDIA:{host_data / 'attachments' / 'email-1' / 'chart.png'}",
+        f"MEDIA:{host_home / 'cache' / 'resend-bridge' / 'generated' / 'chart.png'}",
     )
 
 
@@ -423,16 +427,19 @@ def test_load_settings_uses_bridge_data_dir_env(monkeypatch, tmp_path):
     assert settings.attachment_dir == data_dir / "attachments"
     assert settings.mcp_drafts_file == data_dir / "mcp_email_drafts.json"
     assert settings.bot_reply_context_dir == data_dir / "bot_reply_contexts"
+    assert settings.hermes_bridge_cache_dir == (
+        app.bridge_settings.hermes_home() / "cache" / "resend-bridge"
+    )
 
 
 def test_hermes_proxy_maps_host_and_bridge_paths(monkeypatch, tmp_path):
-    container_data = tmp_path / "container" / "data"
-    host_data = tmp_path / "host" / "data"
     container_home = tmp_path / "container" / "hermes"
     host_home = tmp_path / "host" / "hermes"
-    container_cache_file = container_home / "cache" / "chart.png"
-    host_cache_file = host_home / "cache" / "chart.png"
-    downloaded_file = container_data / "attachments" / "email-1" / "report.txt"
+    container_cache_dir = container_home / "cache" / "resend-bridge"
+    host_cache_dir = host_home / "cache" / "resend-bridge"
+    container_cache_file = container_cache_dir / "generated" / "chart.png"
+    host_cache_file = host_cache_dir / "generated" / "chart.png"
+    downloaded_file = container_cache_dir / "inbound" / "email-1" / "report.txt"
     downloaded_file.parent.mkdir(parents=True)
     downloaded_file.write_text("report", encoding="utf-8")
     container_cache_file.parent.mkdir(parents=True)
@@ -477,18 +484,20 @@ def test_hermes_proxy_maps_host_and_bridge_paths(monkeypatch, tmp_path):
 
     custom_settings = replace(
         app.SETTINGS,
-        bridge_db=container_data / "state.db",
-        attachment_dir=container_data / "attachments",
-        bot_reply_context_dir=container_data / "bot_reply_contexts",
-        generated_attachment_roots=[container_home / "cache"],
-        bridge_host_data_dir=host_data,
+        generated_attachment_roots=[container_cache_dir / "generated"],
+        hermes_bridge_cache_dir=container_cache_dir,
         hermes_host_home=host_home,
         hermes_proxy_url="http://127.0.0.1:18765",
         hermes_proxy_secret="secret",
         hermes_timeout_seconds=30,
     )
     monkeypatch.setattr(app, "SETTINGS", custom_settings)
-    monkeypatch.setattr(app, "GENERATED_ATTACHMENT_ROOTS", custom_settings.generated_attachment_roots)
+    monkeypatch.setattr(
+        app, "GENERATED_ATTACHMENT_ROOTS", custom_settings.generated_attachment_roots
+    )
+    monkeypatch.setattr(
+        app, "HERMES_BRIDGE_CACHE_DIR", custom_settings.hermes_bridge_cache_dir
+    )
     monkeypatch.setattr(app.httpx, "AsyncClient", FakeAsyncClient)
     monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 1)
     monkeypatch.setattr(app, "update_outbound_message", lambda *_args, **_kwargs: None)
@@ -517,9 +526,25 @@ def test_hermes_proxy_maps_host_and_bridge_paths(monkeypatch, tmp_path):
 
     assert captured["url"] == "http://127.0.0.1:18765/task"
     assert captured["headers"]["Authorization"] == "Bearer secret"
-    assert str(host_data / "attachments" / "email-1" / "report.txt") in captured["json"]["prompt"]
-    assert str(host_home / "cache") in captured["json"]["prompt"]
+    assert (
+        str(host_cache_dir / "inbound" / "email-1" / "report.txt")
+        in captured["json"]["prompt"]
+    )
+    assert str(host_cache_dir / "generated") in captured["json"]["prompt"]
     assert decision["owner_report_attachments"] == [str(container_cache_file)]
+
+
+def test_copy_attachment_to_hermes_cache_uses_resend_bridge_subdir(monkeypatch, tmp_path):
+    cache_dir = tmp_path / "hermes" / "cache" / "resend-bridge"
+    source = tmp_path / "downloads" / "report.txt"
+    source.parent.mkdir(parents=True)
+    source.write_text("report", encoding="utf-8")
+    monkeypatch.setattr(app, "HERMES_BRIDGE_CACHE_DIR", cache_dir)
+
+    copied = app.copy_attachment_to_hermes_cache("email-1", source, "report.txt")
+
+    assert copied == cache_dir / "inbound" / "email-1" / "report.txt"
+    assert copied.read_text(encoding="utf-8") == "report"
 
 
 def test_create_app_can_rebind_settings(tmp_path):
@@ -527,12 +552,14 @@ def test_create_app_can_rebind_settings(tmp_path):
     original_user_agent = app.USER_AGENT
     original_context_dir = app.BOT_REPLY_CONTEXT_DIR
     original_generated_roots = app.GENERATED_ATTACHMENT_ROOTS
+    original_cache_dir = app.HERMES_BRIDGE_CACHE_DIR
     custom = replace(
         app.SETTINGS,
         bridge_db=tmp_path / "state.db",
         attachment_dir=tmp_path / "attachments",
         bot_reply_context_dir=tmp_path / "contexts",
         generated_attachment_roots=[tmp_path / "generated"],
+        hermes_bridge_cache_dir=tmp_path / "cache" / "resend-bridge",
         user_agent="test-agent",
     )
 
@@ -547,6 +574,7 @@ def test_create_app_can_rebind_settings(tmp_path):
         app.USER_AGENT = original_user_agent
         app.BOT_REPLY_CONTEXT_DIR = original_context_dir
         app.GENERATED_ATTACHMENT_ROOTS = original_generated_roots
+        app.HERMES_BRIDGE_CACHE_DIR = original_cache_dir
 
 
 def test_mcp_prunes_expired_drafts():

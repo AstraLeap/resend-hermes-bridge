@@ -20,6 +20,7 @@ async def health() -> dict[str, Any]:
         "bridge_send_secret_configured": bool(settings.bridge_send_secret),
         "hermes_binary_available": settings.hermes_send_bin.exists(),
         "hermes_proxy_url": settings.hermes_proxy_url,
+        "hermes_bridge_cache_dir": str(settings.hermes_bridge_cache_dir),
         "database": database,
         "inbound_address": settings.inbound_address,
         "owner_address": settings.owner_address,

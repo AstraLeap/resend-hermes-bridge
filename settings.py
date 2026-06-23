@@ -52,6 +52,13 @@ def hermes_home() -> Path:
     return Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))).expanduser()
 
 
+def hermes_bridge_cache_dir() -> Path:
+    value = os.getenv("HERMES_BRIDGE_CACHE_DIR", "").strip()
+    if value:
+        return Path(value).expanduser()
+    return hermes_home() / "cache" / "resend-bridge"
+
+
 def bridge_data_dir() -> Path:
     return Path(os.getenv("BRIDGE_DATA_DIR", str(APP_DIR / "data"))).expanduser()
 
@@ -82,7 +89,7 @@ def generated_attachment_roots() -> list[Path]:
     raw = os.getenv("GENERATED_ATTACHMENT_ROOTS", "").strip()
     if raw:
         return [Path(p).expanduser().resolve() for p in raw.split(":") if p.strip()]
-    return [Path.home().expanduser().resolve() / ".hermes" / "cache"]
+    return [(hermes_bridge_cache_dir() / "generated").resolve()]
 
 
 def validate_environment() -> list[str]:
@@ -127,8 +134,8 @@ class Settings:
     hermes_send_bin: Path
     hermes_proxy_url: str
     hermes_proxy_secret: str
-    bridge_host_data_dir: Path | None
     hermes_host_home: Path | None
+    hermes_bridge_cache_dir: Path
     bridge_db: Path
     attachment_dir: Path
     mcp_drafts_file: Path
@@ -174,8 +181,8 @@ def load_settings() -> Settings:
         hermes_send_bin=hermes_send_bin(),
         hermes_proxy_url=hermes_proxy_url(),
         hermes_proxy_secret=hermes_proxy_secret(),
-        bridge_host_data_dir=optional_path_env("BRIDGE_HOST_DATA_DIR"),
         hermes_host_home=optional_path_env("HERMES_HOST_HOME"),
+        hermes_bridge_cache_dir=hermes_bridge_cache_dir(),
         bridge_db=data_dir / "state.db",
         attachment_dir=data_dir / "attachments",
         mcp_drafts_file=data_dir / "mcp_email_drafts.json",
