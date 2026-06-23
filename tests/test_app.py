@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import sys
 import types
 from dataclasses import replace
@@ -339,7 +340,7 @@ def test_hermes_task_prompt_keeps_bridge_as_delivery_owner():
     assert "不要编造不存在的路径" in prompt
 
 def test_load_settings_uses_bridge_data_dir_env(monkeypatch, tmp_path):
-    hermes_bin = tmp_path / "hermes-bin"
+    hermes_bin = tmp_path / "hermes"
     hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
     hermes_bin.chmod(0o755)
     data_dir = tmp_path / "runtime-data"
@@ -349,12 +350,15 @@ def test_load_settings_uses_bridge_data_dir_env(monkeypatch, tmp_path):
     monkeypatch.setenv("RESEND_DOMAIN", "example.com")
     monkeypatch.setenv("BOT_FROM_LOCAL", "bot")
     monkeypatch.setenv("OWNER_FROM_LOCAL", "mail")
-    monkeypatch.setenv("HERMES_SEND_BIN", str(hermes_bin))
+    monkeypatch.setenv(
+        "PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}"
+    )
     monkeypatch.setenv("BRIDGE_DATA_DIR", str(data_dir))
     monkeypatch.delenv("BOT_REPLY_CONTEXT_DIR", raising=False)
 
     settings = app.bridge_settings.load_settings()
 
+    assert settings.hermes_send_bin == hermes_bin
     assert settings.bridge_db == data_dir / "state.db"
     assert settings.attachment_dir == data_dir / "attachments"
     assert settings.mcp_drafts_file == data_dir / "mcp_email_drafts.json"

@@ -22,9 +22,6 @@ def require_env(name: str) -> str:
 
 
 def hermes_send_bin() -> Path:
-    value = os.getenv("HERMES_SEND_BIN", "").strip()
-    if value:
-        return Path(value).expanduser()
     resolved = shutil.which("hermes")
     if resolved:
         return Path(resolved).expanduser()
@@ -76,7 +73,7 @@ def validate_environment() -> list[str]:
     send_bin = hermes_send_bin()
     if not send_bin.exists():
         errors.append(
-            f"hermes CLI not found at {send_bin}; install Hermes or set HERMES_SEND_BIN"
+            f"hermes CLI not found at {send_bin}; install Hermes or ensure it is on PATH"
         )
 
     return errors
