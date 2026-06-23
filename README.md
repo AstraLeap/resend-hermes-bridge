@@ -122,7 +122,7 @@ MCP 服务器可自动注册到 Hermes：
 python manage.py install-mcp
 ```
 
-或手动在 `HERMES_HOME/config.yaml` 中添加：
+或手动在 `~/.hermes/config.yaml` 中添加：
 
 ```yaml
 mcp_servers:
@@ -134,7 +134,7 @@ mcp_servers:
       RESEND_BRIDGE_URL: "http://127.0.0.1:8765"
 ```
 
-生成的回复/报告附件允许存放在 `GENERATED_ATTACHMENT_ROOTS`。默认使用 `~/.hermes/cache/resend-bridge/generated`。
+生成的回复/报告附件默认存放在 `~/.hermes/cache/resend-bridge/generated/`。
 
 ## 本地开发
 

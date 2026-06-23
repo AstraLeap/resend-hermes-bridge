@@ -64,9 +64,6 @@ export RESEND_BRIDGE_SEND_SECRET=test-send-secret
 export RESEND_DOMAIN=example.com
 export BOT_FROM_LOCAL=bot
 export OWNER_FROM_LOCAL=mail
-export HERMES_HOME="$ROOT_DIR/.test-hermes"
-
-mkdir -p "$HERMES_HOME"
 
 "$PYTHON_BIN" -m ruff check "$ROOT_DIR"
 exec "$PYTHON_BIN" -m pytest "$@"

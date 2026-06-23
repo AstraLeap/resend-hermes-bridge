@@ -49,13 +49,10 @@ def hermes_send_bin() -> Path:
 
 
 def hermes_home() -> Path:
-    return Path(os.getenv("HERMES_HOME", str(Path.home() / ".hermes"))).expanduser()
+    return Path.home() / ".hermes"
 
 
 def hermes_bridge_cache_dir() -> Path:
-    value = os.getenv("HERMES_BRIDGE_CACHE_DIR", "").strip()
-    if value:
-        return Path(value).expanduser()
     return hermes_home() / "cache" / "resend-bridge"
 
 
@@ -68,9 +65,6 @@ def env_bool(name: str, default: str = "false") -> bool:
 
 
 def generated_attachment_roots() -> list[Path]:
-    raw = os.getenv("GENERATED_ATTACHMENT_ROOTS", "").strip()
-    if raw:
-        return [Path(p).expanduser().resolve() for p in raw.split(":") if p.strip()]
     return [(hermes_bridge_cache_dir() / "generated").resolve()]
 
 
