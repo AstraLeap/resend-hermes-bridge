@@ -9,7 +9,7 @@ from typing import Any
 
 import yaml
 
-import bridge_settings
+import settings as bridge_settings
 
 
 def print_json(value: Any) -> None:
@@ -88,6 +88,10 @@ def command_drafts(_args: argparse.Namespace) -> None:
     print_json(drafts)
 
 
+def _repo_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
 def command_install_mcp(_args: argparse.Namespace) -> None:
     """Register the Resend MCP server in Hermes config.yaml."""
     hermes_home = bridge_settings.hermes_home()
@@ -103,7 +107,7 @@ def command_install_mcp(_args: argparse.Namespace) -> None:
     if not isinstance(config["mcp_servers"], dict):
         raise RuntimeError("Hermes config.yaml has an invalid mcp_servers value")
 
-    repo_dir = Path(__file__).resolve().parent
+    repo_dir = _repo_dir()
     python_bin = Path(sys.executable).resolve()
     mcp_server_path = repo_dir / "resend_mcp_server.py"
 

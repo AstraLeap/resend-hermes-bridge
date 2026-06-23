@@ -72,7 +72,7 @@ Copy the example unit and edit the paths if your clone is not at
 
 ```sh
 mkdir -p ~/.config/systemd/user
-cp deploy/resend-hermes-bridge.service.example \
+cp docs/resend-hermes-bridge.service.example \
   ~/.config/systemd/user/resend-hermes-bridge.service
 systemctl --user daemon-reload
 systemctl --user enable --now resend-hermes-bridge.service

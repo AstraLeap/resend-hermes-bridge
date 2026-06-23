@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app
-import bridge_admin
+import manage
 
 
 class _DummyFastMCP:
@@ -742,7 +742,7 @@ def test_bridge_admin_status_uses_db_health(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(app, "SETTINGS", replace(app.SETTINGS, bridge_db=tmp_path / "state.db"))
     app.init_db()
 
-    bridge_admin.command_status(None)
+    manage.command_status(None)
 
     output = capsys.readouterr().out
     assert '"ok": true' in output

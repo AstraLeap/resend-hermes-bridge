@@ -1,14 +1,15 @@
-.env
-.env.*
+.git
+.gitignore
+
 .venv/
 .test-venv/
 .test-venv-current/
 .test-hermes/
 __pycache__/
 *.py[cod]
-
-.git/
-.gitignore
+*.egg-info/
+build/
+dist/
 
 state.db
 state.db-*
@@ -20,6 +21,4 @@ mcp_email_drafts.json.lock
 *.log
 .pytest_cache/
 .ruff_cache/
-build/
-dist/
-*.egg-info/
+AGENTS.md

@@ -7,7 +7,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-APP_DIR = Path(__file__).resolve().parent.parent
+APP_DIR = Path(__file__).resolve().parent
 SEND_SECRET_PLACEHOLDERS = {
     "change-me-generate-with-openssl-rand-hex-32",
     "generate-with-openssl-rand-hex-32",

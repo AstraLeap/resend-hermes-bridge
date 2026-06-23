@@ -9,7 +9,6 @@ from utils.email_core import (
 )
 from utils.email_display import render_draft_markdown, render_email_markdown
 from utils.notices import render_inbound_email_notice, render_processing_result_notice
-from utils.prompt_templates import load_prompt_template
 
 __all__ = [
     "EmailValidationError",
@@ -23,5 +22,4 @@ __all__ = [
     "render_email_markdown",
     "render_inbound_email_notice",
     "render_processing_result_notice",
-    "load_prompt_template",
 ]

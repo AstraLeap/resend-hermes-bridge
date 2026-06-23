@@ -4,6 +4,7 @@ import base64
 import json
 import mimetypes
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -11,8 +12,14 @@ import httpx
 
 import app as bridge_app
 from db.state import OutboundStatus, StepStatus
-from models.send_models import HermesDecision
-from utils.prompt_templates import load_prompt_template
+from services.resend_outbound import HermesDecision
+from settings import APP_DIR
+
+
+@lru_cache(maxsize=8)
+def load_prompt_template(name: str) -> str:
+    path = APP_DIR / "prompts" / name
+    return path.read_text(encoding="utf-8")
 
 
 def _build_hermes_task_instruction(prompt_record: dict[str, Any]) -> str:
