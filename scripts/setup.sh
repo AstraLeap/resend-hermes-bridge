@@ -151,7 +151,7 @@ fi
 read -rp "Install MCP server config into Hermes config.yaml? [y/N] " install_mcp
 if [[ "$install_mcp" =~ ^[Yy]$ ]]; then
     HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-    "$VENV_DIR/bin/python" -m bridge_admin install-mcp || warn "MCP install failed; you can run it manually later"
+    "$VENV_DIR/bin/python" "$ROOT_DIR/manage.py" install-mcp || warn "MCP install failed; you can run it manually later"
 fi
 
 ok "Setup complete. Edit $ENV_FILE if needed, then start the bridge."

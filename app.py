@@ -83,7 +83,7 @@ from services.resend_outbound import (  # noqa: F401
     send_resend_email,
     send_resend_reply,
 )
-from settings import APP_DIR, Settings
+from settings import Settings
 from utils.email_core import (
     EmailValidationError,
     clean_header_value,
@@ -108,22 +108,6 @@ SCHEMA_VERSION = 1
 def exception_message(exc: Exception) -> str:
     message = str(exc).strip()
     return message or type(exc).__name__
-
-
-def _require_env(name: str) -> str:
-    return bridge_settings.require_env(name)
-
-
-def _require_secret_env(name: str) -> str:
-    return bridge_settings.require_secret_env(name)
-
-
-def _hermes_send_bin() -> Path:
-    return bridge_settings.hermes_send_bin()
-
-
-def _hermes_home() -> Path:
-    return bridge_settings.hermes_home()
 
 
 SETTINGS = bridge_settings.load_settings()
@@ -281,28 +265,6 @@ def agent_attachment_roots() -> list[Path]:
     roots = [HERMES_BRIDGE_CACHE_DIR]
     roots.extend(GENERATED_ATTACHMENT_ROOTS)
     return [root.expanduser().resolve() for root in roots]
-
-
-def _validate_agent_attachment_paths(paths: list[str]) -> list[str]:
-    allowed_roots = agent_attachment_roots()
-    valid: list[str] = []
-    for raw in paths:
-        if not raw:
-            continue
-        path = Path(raw).expanduser()
-        if not path.is_absolute():
-            path = APP_DIR / path
-        path = path.resolve()
-        if not path.is_file():
-            LOGGER.warning("owner_report_attachment does not exist: %s", raw)
-            continue
-        if not any(_path_is_relative_to(path, root) for root in allowed_roots):
-            LOGGER.warning(
-                "owner_report_attachment outside allowed directories: %s", raw
-            )
-            continue
-        valid.append(str(path))
-    return valid
 
 
 def _require_mcp_draft_confirmation(raw: dict[str, Any]) -> None:

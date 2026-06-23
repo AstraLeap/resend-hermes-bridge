@@ -70,23 +70,6 @@ def clean_from_local(value: Any) -> str | None:
     return local
 
 
-def default_from_local(
-    to_addresses: list[str],
-    *,
-    domain: str,
-    bot_local: str | None = None,
-    owner_local: str | None = None,
-) -> str:
-    import os
-
-    bot_local = (bot_local or os.getenv("BOT_FROM_LOCAL") or "").strip().lower()
-    owner_local = (owner_local or os.getenv("OWNER_FROM_LOCAL") or "").strip().lower()
-    if not bot_local or not owner_local:
-        raise RuntimeError("BOT_FROM_LOCAL and OWNER_FROM_LOCAL are required.")
-    normalized = {address.lower() for address in to_addresses}
-    return bot_local if f"{bot_local}@{domain.lower()}" in normalized else owner_local
-
-
 def resolve_sender(
     raw: dict[str, Any],
     *,

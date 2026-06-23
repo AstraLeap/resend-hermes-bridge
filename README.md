@@ -62,10 +62,10 @@ Hermes 任务提示词保存在 `prompts/hermes_email_task.md`；如需更改助
 使用管理 CLI 查看本地状态：
 
 ```sh
-python -m bridge_admin status
-python -m bridge_admin failed --limit 20
-python -m bridge_admin steps <email_id>
-python -m bridge_admin drafts
+python manage.py status
+python manage.py failed --limit 20
+python manage.py steps <email_id>
+python manage.py drafts
 ```
 
 ## 环境要求
@@ -124,7 +124,7 @@ Docker Compose 默认使用 host network，因此容器内访问 `127.0.0.1:1876
 MCP 服务器可自动注册到 Hermes：
 
 ```sh
-python -m bridge_admin install-mcp
+python manage.py install-mcp
 ```
 
 或手动在 `HERMES_HOME/config.yaml` 中添加：

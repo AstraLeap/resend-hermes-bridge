@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 import app
 import manage
+import settings as bridge_settings
 
 
 class _DummyFastMCP:
@@ -95,7 +96,7 @@ def test_bridge_send_secret_rejects_example_placeholder(monkeypatch):
     )
 
     with pytest.raises(RuntimeError, match="openssl rand -hex 32"):
-        app._require_secret_env("RESEND_BRIDGE_SEND_SECRET")
+        bridge_settings.require_secret_env("RESEND_BRIDGE_SEND_SECRET")
 
 
 def test_reply_payload_can_fall_back_to_owner_report():
@@ -837,7 +838,7 @@ def test_init_db_sets_schema_version(monkeypatch, tmp_path):
     assert int(row[0]) == app.SCHEMA_VERSION
 
 
-def test_bridge_admin_status_uses_db_health(monkeypatch, tmp_path, capsys):
+def test_manage_cli_status_uses_db_health(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(app, "SETTINGS", replace(app.SETTINGS, bridge_db=tmp_path / "state.db"))
     app.init_db()
 
