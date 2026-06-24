@@ -1688,6 +1688,105 @@ def test_mailbox_store_search_labels_and_soft_delete(monkeypatch, tmp_path):
     )
 
 
+def test_mailbox_store_list_mailbox_sorts_pages_and_aliases(monkeypatch, tmp_path):
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(
+            app.SETTINGS,
+            bridge_db=db_path,
+            attachment_dir=tmp_path / "attachments",
+        ),
+    )
+    app.init_db()
+    app.record_inbound_email(
+        svix_id="svix-old",
+        event={"type": "email.received", "data": {"email_id": "email-old"}},
+        email={
+            "id": "email-old",
+            "from": "old@example.com",
+            "to": ["mail@example.com"],
+            "subject": "Old inbox",
+            "text": "Old body",
+        },
+        attachments=[],
+        addressed_to_inbound=False,
+    )
+    app.record_inbound_email(
+        svix_id="svix-mid",
+        event={"type": "email.received", "data": {"email_id": "email-mid"}},
+        email={
+            "id": "email-mid",
+            "from": "mid@example.com",
+            "to": ["mail@example.com"],
+            "subject": "Mid inbox",
+            "text": "Mid body",
+        },
+        attachments=[],
+        addressed_to_inbound=False,
+    )
+    outbound_id = app.create_outbound_message(
+        kind="manual",
+        email_id=None,
+        recipient="recipient@example.com",
+        subject="Latest sent",
+        body_text="Latest body",
+        payload={"text": "Latest body"},
+    )
+    with app.open_db() as conn:
+        conn.execute(
+            "UPDATE inbound_emails SET received_at = ?, updated_at = ? WHERE email_id = ?",
+            ("2026-01-01T10:00:00+00:00", "2026-01-01T10:00:00+00:00", "email-old"),
+        )
+        conn.execute(
+            "UPDATE inbound_emails SET received_at = ?, updated_at = ? WHERE email_id = ?",
+            ("2026-01-03T10:00:00+00:00", "2026-01-03T10:00:00+00:00", "email-mid"),
+        )
+        conn.execute(
+            """
+            UPDATE outbound_messages
+            SET status = ?, created_at = ?, updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                app.OutboundStatus.SENT,
+                "2026-01-05T10:00:00+00:00",
+                "2026-01-05T10:00:00+00:00",
+                outbound_id,
+            ),
+        )
+
+    first_page = mailbox_store.list_mailbox(db_path=db_path, mailbox="邮件箱", limit=2)
+    assert first_page["mailbox"] == "all"
+    assert first_page["total"] == 3
+    assert first_page["count"] == 2
+    assert first_page["has_more"] is True
+    assert first_page["next_offset"] == 2
+    assert [item["subject"] for item in first_page["items"]] == [
+        "Latest sent",
+        "Mid inbox",
+    ]
+    assert "_search_text" not in first_page["items"][0]
+    assert "按最新时间排序" in first_page["display"]
+
+    second_page = mailbox_store.list_mailbox(
+        db_path=db_path,
+        mailbox="all",
+        limit=2,
+        offset=2,
+    )
+    assert [item["subject"] for item in second_page["items"]] == ["Old inbox"]
+    assert second_page["has_more"] is False
+
+    sent = mailbox_store.list_mailbox(db_path=db_path, mailbox="发件箱")
+    assert [item["message_id"] for item in sent["items"]] == [str(outbound_id)]
+    assert sent["items"][0]["mailbox"] == "sent"
+
+    inbox = mailbox_store.list_mailbox(db_path=db_path, mailbox="收件箱")
+    assert [item["message_id"] for item in inbox["items"]] == ["email-mid", "email-old"]
+
+
 def test_mcp_history_tools_use_mailbox_store(monkeypatch, tmp_path):
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(
@@ -1724,10 +1823,14 @@ def test_mcp_history_tools_use_mailbox_store(monkeypatch, tmp_path):
         )
     )
     searched = asyncio.run(resend_mcp_server.search_emails(label="inbox"))
+    listed = asyncio.run(resend_mcp_server.list_emails(mailbox="收件箱", limit=5))
     viewed = asyncio.run(resend_mcp_server.view_email("email-1", kind="inbound"))
 
     assert labeled["labels"] == ["inbox"]
     assert searched["items"][0]["subject"] == "Hello MCP"
+    assert listed["mailbox"] == "inbox"
+    assert listed["items"][0]["subject"] == "Hello MCP"
+    assert "收件箱" in listed["display"]
     assert viewed["text_body"] == "Searchable body"
 
 
@@ -1736,6 +1839,8 @@ def test_mcp_tools_reject_automated_tool_source(monkeypatch):
 
     with pytest.raises(PermissionError, match="disabled for automated tool sessions"):
         asyncio.run(resend_mcp_server.search_emails())
+    with pytest.raises(PermissionError, match="disabled for automated tool sessions"):
+        asyncio.run(resend_mcp_server.list_emails())
 
 
 def test_manage_cli_status_uses_db_health(monkeypatch, tmp_path, capsys):

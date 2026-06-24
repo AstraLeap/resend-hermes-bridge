@@ -585,6 +585,36 @@ async def send_email(
 
 
 @mcp.tool()
+async def list_emails(
+    mailbox: str = "all",
+    label: str = "",
+    status: str = "",
+    limit: int = 20,
+    offset: int = 0,
+    include_deleted: bool = False,
+) -> dict[str, Any]:
+    """List local email history by mailbox, newest first.
+
+    mailbox accepts all, inbox, sent, or trash, plus common aliases such as
+    outbound/outbox/发件箱 and inbound/收件箱. Use limit and offset to page
+    through results. The returned message_id and kind are the identifiers to
+    pass to view_email, delete_email, and manage_email_labels. Deleted messages
+    are hidden unless include_deleted is true, except trash which shows only
+    deleted messages.
+    """
+    _require_user_chat_context()
+    return mailbox_store.list_mailbox(
+        db_path=STATE_DB_FILE,
+        mailbox=mailbox,
+        label=label,
+        status=status,
+        limit=limit,
+        offset=offset,
+        include_deleted=include_deleted,
+    )
+
+
+@mcp.tool()
 async def search_emails(
     query: str = "",
     label: str = "",
@@ -596,8 +626,9 @@ async def search_emails(
 ) -> dict[str, Any]:
     """Search local email history recorded by the bridge.
 
-    direction accepts all, inbound, or outbound. The returned message_id and
-    kind are the identifiers to pass to view_email, delete_email, and
+    Use list_emails when the user asks to browse a mailbox without search
+    terms. direction accepts all, inbound, or outbound. The returned message_id
+    and kind are the identifiers to pass to view_email, delete_email, and
     manage_email_labels. Deleted messages are hidden unless include_deleted is
     true. This tool is for user chat sessions only; automated bot email tasks
     are not allowed to use it.

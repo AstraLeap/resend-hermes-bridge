@@ -11,6 +11,46 @@ from settings import APP_DIR
 
 STATE_DB_FILE = APP_DIR / "data" / "state.db"
 VALID_MESSAGE_KINDS = {"inbound", "outbound"}
+MAILBOX_ALIASES = {
+    "": "all",
+    "all": "all",
+    "mailbox": "all",
+    "mailboxes": "all",
+    "history": "all",
+    "邮件箱": "all",
+    "全部": "all",
+    "所有": "all",
+    "inbox": "inbox",
+    "收件箱": "inbox",
+    "inbound": "inbox",
+    "received": "inbox",
+    "receive": "inbox",
+    "incoming": "inbox",
+    "sent": "sent",
+    "sentbox": "sent",
+    "outbox": "sent",
+    "outbound": "sent",
+    "outgoing": "sent",
+    "send": "sent",
+    "发件箱": "sent",
+    "已发送": "sent",
+    "trash": "trash",
+    "deleted": "trash",
+    "回收站": "trash",
+    "已删除": "trash",
+}
+MAILBOX_DIRECTIONS = {
+    "all": "all",
+    "inbox": "inbound",
+    "sent": "outbound",
+    "trash": "all",
+}
+MAILBOX_TITLES = {
+    "all": "邮件列表",
+    "inbox": "收件箱",
+    "sent": "发件箱",
+    "trash": "回收站",
+}
 MAX_LABEL_LENGTH = 64
 MAX_SEARCH_LIMIT = 100
 DEFAULT_BODY_LIMIT = 12000
@@ -61,6 +101,16 @@ def normalize_message_kind(kind: Any) -> str:
     return normalized
 
 
+def normalize_mailbox(mailbox: Any) -> str:
+    normalized = str(mailbox or "all").strip().casefold()
+    mapped = MAILBOX_ALIASES.get(normalized)
+    if mapped is None:
+        raise MailboxStoreError(
+            "mailbox must be one of: all, inbox, sent, or trash"
+        )
+    return mapped
+
+
 def normalize_label(label: Any) -> str:
     normalized = str(label or "").strip()
     if not normalized:
@@ -105,6 +155,7 @@ def search_mailbox(
     limit: int = 20,
     offset: int = 0,
     include_deleted: bool = False,
+    deleted_only: bool = False,
 ) -> dict[str, Any]:
     direction = str(direction or "all").strip().lower()
     if direction in {"received", "incoming"}:
@@ -120,12 +171,18 @@ def search_mailbox(
     status_text = str(status or "").strip().casefold()
     label_text = str(label or "").strip().casefold()
 
+    if deleted_only:
+        include_deleted = True
+
     if not db_path.exists():
         return {
             "items": [],
             "total": 0,
+            "count": 0,
             "limit": limit,
             "offset": offset,
+            "has_more": False,
+            "next_offset": None,
             "database": str(db_path),
         }
 
@@ -148,16 +205,62 @@ def search_mailbox(
         for row in rows
         if _matches_summary(row, query_text=query_text, status_text=status_text)
         and _matches_label(row, label_text=label_text)
+        and (not deleted_only or row.get("deleted"))
     ]
     filtered.sort(key=lambda row: str(row.get("timestamp") or ""), reverse=True)
     page = filtered[offset : offset + limit]
+    next_offset = offset + limit
+    has_more = next_offset < len(filtered)
     return {
         "items": page,
         "total": len(filtered),
+        "count": len(page),
         "limit": limit,
         "offset": offset,
+        "has_more": has_more,
+        "next_offset": next_offset if has_more else None,
         "database": str(db_path),
     }
+
+
+def list_mailbox(
+    *,
+    db_path: Path = STATE_DB_FILE,
+    mailbox: str = "all",
+    label: str = "",
+    status: str = "",
+    limit: int = 20,
+    offset: int = 0,
+    include_deleted: bool = False,
+) -> dict[str, Any]:
+    normalized_mailbox = normalize_mailbox(mailbox)
+    deleted_only = normalized_mailbox == "trash"
+    result = search_mailbox(
+        db_path=db_path,
+        direction=MAILBOX_DIRECTIONS[normalized_mailbox],
+        label=label,
+        status=status,
+        limit=limit,
+        offset=offset,
+        include_deleted=include_deleted or deleted_only,
+        deleted_only=deleted_only,
+    )
+    items = [_public_summary(item) for item in result["items"]]
+    listing = {
+        **result,
+        "items": items,
+        "mailbox": normalized_mailbox,
+        "mailbox_title": MAILBOX_TITLES[normalized_mailbox],
+        "sort": "timestamp_desc",
+        "available_mailboxes": [
+            {"mailbox": "all", "title": MAILBOX_TITLES["all"]},
+            {"mailbox": "inbox", "title": MAILBOX_TITLES["inbox"]},
+            {"mailbox": "sent", "title": MAILBOX_TITLES["sent"]},
+            {"mailbox": "trash", "title": MAILBOX_TITLES["trash"]},
+        ],
+    }
+    listing["display"] = format_mailbox_listing(listing)
+    return listing
 
 
 def get_mailbox_email(
@@ -450,6 +553,19 @@ def _outbound_summary(row: sqlite3.Row) -> dict[str, Any]:
     }
 
 
+def _public_summary(row: dict[str, Any]) -> dict[str, Any]:
+    item = {
+        key: value
+        for key, value in row.items()
+        if not key.startswith("_")
+    }
+    if item.get("kind") == "inbound":
+        item["mailbox"] = "inbox"
+    elif item.get("kind") == "outbound":
+        item["mailbox"] = "sent"
+    return item
+
+
 def _inbound_detail(
     conn: sqlite3.Connection, row: sqlite3.Row, *, body_limit: int
 ) -> dict[str, Any]:
@@ -599,3 +715,66 @@ def _limit_text(value: Any, limit: int) -> str:
     if limit <= 0 or len(text) <= limit:
         return text
     return text[:limit].rstrip() + "\n...[truncated]"
+
+
+def format_mailbox_listing(result: dict[str, Any]) -> str:
+    title = str(result.get("mailbox_title") or "邮件列表")
+    items = result.get("items") or []
+    total = int(result.get("total") or 0)
+    offset = int(result.get("offset") or 0)
+    limit = int(result.get("limit") or 0)
+    if not items:
+        return f"{title}：没有邮件。"
+
+    start = offset + 1
+    end = offset + len(items)
+    lines = [f"{title}：显示 {start}-{end} / {total}，按最新时间排序。"]
+    for index, item in enumerate(items, start=start):
+        lines.extend(_format_mailbox_item(index, item))
+    if result.get("has_more"):
+        next_offset = result.get("next_offset")
+        lines.append(f"继续查看请使用 offset={next_offset}, limit={limit}。")
+    return "\n".join(lines)
+
+
+def _format_mailbox_item(index: int, item: dict[str, Any]) -> list[str]:
+    kind = str(item.get("kind") or "")
+    direction = "收" if kind == "inbound" else "发"
+    timestamp = _one_line(item.get("timestamp") or item.get("received_at") or item.get("created_at"))
+    subject = _one_line(item.get("subject") or "(无主题)")
+    message_id = _markdown_code(item.get("message_id") or "")
+    party = _format_party(item)
+    status = _one_line(item.get("status") or "")
+    deleted = " 已删除" if item.get("deleted") else ""
+    first_line = (
+        f"{index}. [{direction}] {timestamp} {party} | {subject} | "
+        f"status={status}{deleted} | id `{message_id}`"
+    )
+
+    lines = [first_line]
+    preview = _one_line(item.get("preview") or "")
+    if preview:
+        lines.append(f"   {preview}")
+    labels = item.get("labels") or []
+    if labels:
+        lines.append(f"   labels: {', '.join(_one_line(label) for label in labels)}")
+    return lines
+
+
+def _format_party(item: dict[str, Any]) -> str:
+    if item.get("kind") == "inbound":
+        sender = _one_line(item.get("from") or "")
+        return f"from {sender}" if sender else "from unknown"
+    recipient = _one_line(item.get("recipient") or "")
+    return f"to {recipient}" if recipient else "to unknown"
+
+
+def _one_line(value: Any, limit: int = 160) -> str:
+    text = re.sub(r"\s+", " ", str(value or "")).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "..."
+
+
+def _markdown_code(value: Any) -> str:
+    return str(value or "").replace("`", "\\`")

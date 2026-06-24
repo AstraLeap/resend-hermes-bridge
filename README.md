@@ -47,7 +47,7 @@ Hermes MCP resend_email
     |-- confirmed=false: create local draft and show preview
     |-- user confirms in chat
     |-- confirmed=true + draft_id: bridge validates draft and sends
-    |-- search/view/delete/tag local email history
+    |-- list/search/view/delete/tag local email history
     v
 Resend outbound email
 ```
