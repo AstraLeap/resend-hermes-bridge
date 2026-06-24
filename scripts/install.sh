@@ -167,7 +167,8 @@ RestartSec=5
 WantedBy=default.target
 EOF
 systemctl --user daemon-reload
-ok "Installed bridge service. Start with: systemctl --user enable --now resend-hermes-bridge.service"
+systemctl --user enable --now resend-hermes-bridge.service
+ok "Installed and started bridge service"
 
 info "Registering MCP server in Hermes config.yaml..."
 if "$VENV_DIR/bin/python" "$ROOT_DIR/scripts/manage.py" install-mcp; then
@@ -179,6 +180,4 @@ else
 fi
 
 ok "Install complete. Edit $ENV_FILE if needed."
-info "Start the bridge service:"
-info "  systemctl --user enable --now resend-hermes-bridge.service"
 info "If a Hermes session is already open, run /reload-mcp in that session."

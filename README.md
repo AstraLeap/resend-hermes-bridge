@@ -98,14 +98,8 @@ cd resend-hermes-bridge
 - 检查 Python 版本，要求 Python 3.11 或更高版本。
 - 创建 `.venv` 并安装运行依赖。
 - 从 `.env.example` 创建 `.env`，并交互式填写常用配置。
-- 安装 systemd 用户服务。
+- 安装 systemd 用户服务并启动。
 - 把 MCP server 注册到 Hermes `config.yaml`。
-
-启动服务：
-
-```sh
-systemctl --user enable --now resend-hermes-bridge.service
-```
 
 检查服务：
 
@@ -124,51 +118,6 @@ curl http://127.0.0.1:8765/health
 
 卸载脚本会停止并删除 systemd 用户服务，并可选删除 MCP 配置、`.venv`、`.env` 和 Python 缓存。运行时数据 `data/` 默认保留。
 
-## 配置项
-
-核心地址由两个 local part 和一个域名组成：
-
-```text
-BOT_FROM_LOCAL=bot
-OWNER_FROM_LOCAL=mail
-RESEND_DOMAIN=example.com
-```
-
-对应地址：
-
-- 机器人邮箱：`bot@example.com`
-- 主人/手动发信邮箱：`mail@example.com`
-
-常用配置：
-
-| 变量 | 说明 |
-| --- | --- |
-| `RESEND_API_KEY` | Resend API key。 |
-| `RESEND_WEBHOOK_SECRET` | Resend Inbound Webhook 的 Svix 签名密钥。 |
-| `RESEND_DOMAIN` | 已验证发信域名，不带 `@`。 |
-| `BOT_FROM_LOCAL` | 机器人邮箱 local part。 |
-| `OWNER_FROM_LOCAL` | 主人/手动外发邮箱 local part。 |
-| `AI_NAME` | 给主人通知时显示的助手名称。 |
-| `NOTIFICATION_TARGET` | 传给 `hermes send --to` 的目标，例如 `telegram`、`weixin`、`qqbot`、`wecom`、`discord`、`slack`、`signal`。 |
-| `RESEND_BRIDGE_URL` | MCP server 访问桥接服务的 URL，默认 `http://127.0.0.1:8765`。 |
-| `LOG_LEVEL` | Python 日志等级，默认 `INFO`。 |
-
-运行限制和保留策略：
-
-| 变量 | 默认值 | 说明 |
-| --- | ---: | --- |
-| `MAX_ATTACHMENT_DOWNLOAD_BYTES` | `15728640` | 单个入站附件下载上限。 |
-| `MAX_OUTBOUND_ATTACHMENT_BYTES` | `31457280` | 单个外发附件和外发附件总量上限。 |
-| `HERMES_TIMEOUT_SECONDS` | `180` | Hermes 处理机器人邮件的超时时间。 |
-| `HERMES_EMAIL_TASK_TOOLSETS` | `browser,clarify,code_execution,cronjob,delegation,file,image_gen,memory,session_search,skills,terminal,vision,web` | 机器人邮件子任务允许使用的 Hermes 工具集。会过滤掉 `resend_email`。 |
-| `BRIDGE_RETENTION_DAYS` | `90` | SQLite 历史清理保留天数。 |
-| `BRIDGE_RECOVER_FAILED_EVENTS` | `true` | 服务启动时是否恢复未完成事件。 |
-| `BRIDGE_EVENT_RECOVERY_LIMIT` | `50` | 单次恢复事件数量上限。 |
-| `RESEND_MCP_DRAFT_TTL_SECONDS` | `604800` | MCP 邮件草稿保留时间。 |
-| `BOT_REPLY_CONTEXT_TTL_SECONDS` | `600` | 机器人自动回复上下文有效期。 |
-
-Hermes 各通知平台的凭证放在 Hermes 自己的配置里，通常是 `~/.hermes/.env`，不要放进本项目仓库。
-
 ## 手动安装
 
 如果不使用安装脚本，可以手动执行：
@@ -178,6 +127,7 @@ python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+$EDITOR .env
 ```
 
 编辑 `.env` 后安装 systemd 用户服务和 MCP 配置：
