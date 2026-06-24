@@ -323,7 +323,7 @@ async def send_email(
                 title="请确认是否发送以下邮件：",
                 footer=footer,
             )
-            acknowledgment = f"草稿预览已发送到当前对话，请确认是否发送这封邮件。{footer}"
+            acknowledgment = ""
         except Exception as exc:
             acknowledgment = f"{confirmation_markdown}\n\n（无法通过桥接发送富文本预览：{exc}）"
         return {
@@ -333,7 +333,7 @@ async def send_email(
             "display": acknowledgment,
             "confirmation_markdown": confirmation_markdown,
             "metadata": _redacted_draft(draft_id, draft),
-            "next_step": "Reply to the user with assistant_response verbatim. Do not rewrite the wording or confirmation prompt. Call send_email again with confirmed=true after the user confirms sending this draft.",
+            "next_step": "The formatted draft preview has been shown to the user. Do not send any additional message. Wait for the user to confirm; when they do, call send_email again with confirmed=true and the same draft_id.",
         }
 
     if not draft_id:
