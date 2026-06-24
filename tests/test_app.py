@@ -1605,6 +1605,28 @@ def test_manage_cli_status_uses_db_health(monkeypatch, tmp_path, capsys):
     assert f'"schema_version": {app.SCHEMA_VERSION}' in output
 
 
+def test_manage_install_mcp_loads_project_env(monkeypatch, tmp_path, capsys):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr(manage.bridge_settings, "hermes_home", lambda: hermes_home)
+    monkeypatch.delenv("RESEND_BRIDGE_URL", raising=False)
+
+    def fake_load_project_env():
+        monkeypatch.setenv("RESEND_BRIDGE_URL", "http://127.0.0.1:9999/")
+
+    monkeypatch.setattr(manage.bridge_settings, "load_project_env", fake_load_project_env)
+
+    manage.command_install_mcp(None)
+
+    capsys.readouterr()
+    config = manage.yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert config["mcp_servers"]["resend_email"]["env"]["RESEND_BRIDGE_URL"] == (
+        "http://127.0.0.1:9999"
+    )
+
+
 def test_app_accepts_confirmed_manual_send_from_matching_draft(monkeypatch, tmp_path):
     drafts_file = tmp_path / "drafts.json"
     payload = {

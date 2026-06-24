@@ -94,6 +94,7 @@ def _repo_dir() -> Path:
 
 def command_install_mcp(_args: argparse.Namespace) -> None:
     """Register the Resend MCP server in Hermes config.yaml."""
+    bridge_settings.load_project_env()
     hermes_home = bridge_settings.hermes_home()
     config_path = hermes_home / "config.yaml"
     if not config_path.exists():
