@@ -3,6 +3,5 @@ httpx==0.28.1
 mcp==1.28.0
 python-dotenv==1.0.1
 pyyaml==6.0.2
-sse-starlette==3.4.5
 svix==1.57.0
 uvicorn[standard]==0.34.0

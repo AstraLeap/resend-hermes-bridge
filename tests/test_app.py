@@ -166,7 +166,6 @@ def test_reply_payload_can_fall_back_to_owner_report():
 
 def test_activity_summary_mentions_execution_and_optional_reply():
     summary = app.build_activity_summary(
-        {"from": "sender@example.com", "subject": "天气"},
         {
             "executed_task": True,
             "owner_report": "北京今天晴。",
@@ -353,6 +352,41 @@ def test_bot_email_notice_ignores_custom_title_env(monkeypatch):
 
     assert messages[0].startswith("Hermes收到邮件啦！正在处理中哦~")
     assert "不应该生效" not in messages[0]
+
+
+def test_expired_bot_reply_context_is_rejected_and_removed(monkeypatch, tmp_path):
+    context_dir = tmp_path / "bot_reply_contexts"
+    context_dir.mkdir()
+    monkeypatch.setattr(app, "BOT_REPLY_CONTEXT_DIR", context_dir)
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(app.SETTINGS, bot_reply_context_ttl_seconds=60),
+    )
+    path = context_dir / "email-1.json"
+    path.write_text(
+        json.dumps(
+            {
+                "email_id": "email-1",
+                "sender": app.SETTINGS.inbound_address,
+                "reply_to": "sender@example.com",
+                "created_at": (datetime.now(UTC) - timedelta(seconds=120)).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        app._is_authorized_bot_reply(
+            {
+                "auto_reply_email_id": "email-1",
+                "from_local": app.SETTINGS.bot_from_local,
+                "to": ["sender@example.com"],
+            }
+        )
+        is False
+    )
+    assert not path.exists()
 
 
 def test_notify_telegram_uses_hermes_send_by_default(monkeypatch, tmp_path):
@@ -904,6 +938,8 @@ def test_reply_notice_shows_only_sent_email_without_summary_footer():
     assert "决策原因" not in notice
     assert "Hermes 汇报" not in notice
     assert "Reply ID" not in notice
+    assert "Resend ID: `reply-123`" in notice
+    assert "Email ID" not in notice
     assert "一只小狗" in notice
 
 
@@ -980,6 +1016,8 @@ def test_load_settings_uses_project_data_dir(monkeypatch, tmp_path):
     assert settings.attachment_dir == data_dir / "attachments"
     assert settings.mcp_drafts_file == data_dir / "mcp_email_drafts.json"
     assert settings.bot_reply_context_dir == data_dir / "bot_reply_contexts"
+    assert settings.bot_reply_context_ttl_seconds == 600
+    assert settings.mcp_draft_ttl_seconds == 604800
     assert settings.generated_attachment_roots == [data_dir / "generated"]
 
 
@@ -1099,6 +1137,15 @@ def test_mcp_outbound_payload_accepts_attachment_paths():
     assert payload["attachments"] == [{"path": "/tmp/report.txt"}]
 
 
+def test_mcp_rejects_chat_preview_template_as_body():
+    with pytest.raises(ValueError, match="chat preview or confirmation template"):
+        resend_mcp_server._format_outbound_payload(
+            to=["recipient@example.com"],
+            subject="Hello",
+            text="邮件草稿已创建，请确认：\n\n| 项目 | 内容 |\n| --- | --- |",
+        )
+
+
 def test_mcp_allows_custom_sender_local_including_bot():
     custom_payload = resend_mcp_server._format_outbound_payload(
         to=["recipient@example.com"],
@@ -1137,6 +1184,115 @@ def test_mcp_rejects_direct_confirmed_send_without_draft(monkeypatch):
         )
 
     assert calls == []
+
+
+def test_mcp_draft_success_returns_minimal_preview_marker(monkeypatch, tmp_path):
+    drafts_file = tmp_path / "drafts.json"
+    lock_file = tmp_path / "drafts.json.lock"
+    shown = []
+
+    async def fake_show(payload, *, draft_id, title="", footer=""):
+        shown.append(
+            {
+                "payload": dict(payload),
+                "draft_id": draft_id,
+                "title": title,
+                "footer": footer,
+            }
+        )
+
+    monkeypatch.setattr(resend_mcp_server, "DRAFTS_FILE", drafts_file)
+    monkeypatch.setattr(resend_mcp_server, "DRAFTS_LOCK_FILE", lock_file)
+    monkeypatch.setattr(resend_mcp_server, "_show_draft_via_bridge", fake_show)
+
+    result = asyncio.run(
+        resend_mcp_server.send_email(
+            to=["recipient@example.com"],
+            subject="Hello",
+            text="Hi",
+        )
+    )
+
+    assert result == {
+        "status": "drafted",
+        "draft_id": result["draft_id"],
+        "preview_delivered": True,
+    }
+    assert shown[0]["payload"]["to"] == ["recipient@example.com"]
+    assert shown[0]["payload"]["subject"] == "Hello"
+    serialized = json.dumps(result, ensure_ascii=False)
+    assert "assistant_response" not in serialized
+    assert "display" not in serialized
+    assert "metadata" not in serialized
+    assert "next_step" not in serialized
+    assert "recipient@example.com" not in serialized
+    assert "Hello" not in serialized
+    assert "Hi" not in serialized
+
+
+def test_mcp_revision_creates_new_draft_and_links_previous(monkeypatch, tmp_path):
+    drafts_file = tmp_path / "drafts.json"
+    lock_file = tmp_path / "drafts.json.lock"
+    shown = []
+
+    async def fake_show(payload, *, draft_id, title="", footer=""):
+        shown.append({"payload": dict(payload), "draft_id": draft_id})
+
+    monkeypatch.setattr(resend_mcp_server, "DRAFTS_FILE", drafts_file)
+    monkeypatch.setattr(resend_mcp_server, "DRAFTS_LOCK_FILE", lock_file)
+    monkeypatch.setattr(resend_mcp_server, "_show_draft_via_bridge", fake_show)
+
+    first = asyncio.run(
+        resend_mcp_server.send_email(
+            to=["recipient@example.com"],
+            subject="Hello",
+            text="First body",
+        )
+    )
+    second = asyncio.run(
+        resend_mcp_server.send_email(
+            to=["recipient@example.com"],
+            subject="Revised",
+            text="Second body",
+            revision_of=first["draft_id"],
+        )
+    )
+
+    assert second["draft_id"] != first["draft_id"]
+    assert shown[-1]["payload"]["subject"] == "Revised"
+    data = json.loads(drafts_file.read_text(encoding="utf-8"))
+    assert data[second["draft_id"]]["revision_of"] == first["draft_id"]
+    assert second["draft_id"] in data[first["draft_id"]]["revisions"]
+
+
+def test_mcp_draft_id_with_new_payload_requires_revision_of(monkeypatch, tmp_path):
+    drafts_file = tmp_path / "drafts.json"
+    lock_file = tmp_path / "drafts.json.lock"
+
+    async def fake_show(_payload, *, draft_id, title="", footer=""):
+        return None
+
+    monkeypatch.setattr(resend_mcp_server, "DRAFTS_FILE", drafts_file)
+    monkeypatch.setattr(resend_mcp_server, "DRAFTS_LOCK_FILE", lock_file)
+    monkeypatch.setattr(resend_mcp_server, "_show_draft_via_bridge", fake_show)
+
+    first = asyncio.run(
+        resend_mcp_server.send_email(
+            to=["recipient@example.com"],
+            subject="Hello",
+            text="First body",
+        )
+    )
+
+    with pytest.raises(ValueError, match="revision_of"):
+        asyncio.run(
+            resend_mcp_server.send_email(
+                to=["recipient@example.com"],
+                subject="Changed",
+                text="Changed body",
+                draft_id=first["draft_id"],
+            )
+        )
 
 
 def test_mcp_confirmed_draft_send_adds_hidden_approval_token(monkeypatch, tmp_path):
@@ -1330,6 +1486,54 @@ def test_send_endpoint_accepts_manual_send(monkeypatch, tmp_path):
     assert captured["payload"]["from"] == "mail@example.com"
 
 
+def test_send_endpoint_marks_draft_sent_and_rejects_reuse(monkeypatch, tmp_path):
+    drafts_file = tmp_path / "drafts.json"
+    payload = {
+        "from_local": "mail",
+        "to": ["recipient@example.com"],
+        "subject": "Hello",
+        "text": "Hi",
+    }
+    _write_draft_file(drafts_file, "draft-1", payload)
+    _patch_settings_for_send_endpoint(monkeypatch, tmp_path, drafts_file)
+    sent_payloads = []
+
+    async def fake_send_resend_email(payload, *, email_id=None, step="resend_send"):
+        sent_payloads.append(payload)
+        return 123, "resend-123"
+
+    monkeypatch.setattr(app, "send_resend_email", fake_send_resend_email)
+
+    request_body = {
+        **payload,
+        "confirmed": True,
+        "draft_id": "draft-1",
+        "approval_token": "token",
+    }
+    with TestClient(app.app) as client:
+        first = client.post("/send", json=request_body)
+        second = client.post("/send", json=request_body)
+
+    assert first.status_code == 200
+    assert second.status_code == 400
+    assert "already sent" in second.json()["detail"]
+    assert len(sent_payloads) == 1
+    stored = json.loads(drafts_file.read_text(encoding="utf-8"))["draft-1"]
+    assert stored["sent"] is True
+    assert stored["sending"] is False
+    assert stored["bridge_response"]["resend_id"] == "resend-123"
+
+
+def test_send_endpoint_rejects_non_object_json(monkeypatch, tmp_path):
+    _patch_settings_for_send_endpoint(monkeypatch, tmp_path, tmp_path / "drafts.json")
+
+    with TestClient(app.app) as client:
+        response = client.post("/send", json=[])
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "JSON object body is required"
+
+
 def test_show_draft_endpoint_renders_and_notifies(monkeypatch, tmp_path):
     drafts_file = tmp_path / "drafts.json"
     _patch_settings_for_send_endpoint(monkeypatch, tmp_path, drafts_file)
@@ -1366,6 +1570,16 @@ def test_show_draft_endpoint_renders_and_notifies(monkeypatch, tmp_path):
     assert "Draft ID" in captured["message"]
     assert "确认后发送。" in captured["message"]
     assert captured["email_id"] is None
+
+
+def test_show_draft_endpoint_rejects_non_object_json(monkeypatch, tmp_path):
+    _patch_settings_for_send_endpoint(monkeypatch, tmp_path, tmp_path / "drafts.json")
+
+    with TestClient(app.app) as client:
+        response = client.post("/show-draft", json=[])
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "JSON object body is required"
 
 
 def test_init_db_sets_schema_version(monkeypatch, tmp_path):
@@ -1717,3 +1931,48 @@ def test_record_fetched_attachment_metadata_updates_download_status(monkeypatch,
     assert rows[0]["attachment_id"] == "att-1"
     assert rows[0]["local_path"] == "/tmp/report.txt"
     assert rows[0]["text_snippet"] == "hello"
+
+
+def test_attachment_download_failure_records_error_and_continues(monkeypatch, tmp_path):
+    records = []
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(app.SETTINGS, attachment_dir=tmp_path / "attachments"),
+    )
+    monkeypatch.setattr(
+        app,
+        "record_attachment_history",
+        lambda **kwargs: records.append(kwargs),
+    )
+
+    class BrokenStream:
+        async def __aenter__(self):
+            raise RuntimeError("download failed")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class FakeClient:
+        def stream(self, *_args, **_kwargs):
+            return BrokenStream()
+
+    results = asyncio.run(
+        app.download_relevant_attachments(
+            FakeClient(),
+            "email-1",
+            [
+                {
+                    "id": "att-1",
+                    "filename": "report.txt",
+                    "content_type": "text/plain",
+                    "download_url": "https://example.com/report.txt",
+                }
+            ],
+        )
+    )
+
+    assert len(results) == 1
+    assert results[0]["relevant"] is True
+    assert results[0]["error"] == "download failed"
+    assert records[0]["item"]["error"] == "download failed"

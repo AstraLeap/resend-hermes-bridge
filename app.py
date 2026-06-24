@@ -7,6 +7,7 @@ import logging
 import os
 import re
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from email.utils import parseaddr
 from pathlib import Path
 from typing import Any
@@ -109,24 +110,6 @@ def exception_message(exc: Exception) -> str:
 
 SETTINGS = bridge_settings.load_settings()
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log"}
-RELEVANT_EXTENSIONS = {
-    ".csv",
-    ".doc",
-    ".docx",
-    ".json",
-    ".md",
-    ".pdf",
-    ".ppt",
-    ".pptx",
-    ".rtf",
-    ".txt",
-    ".xls",
-    ".xlsx",
-    ".xml",
-    ".yaml",
-    ".yml",
-    ".zip",
-}
 BOT_REPLY_CONTEXT_DIR = SETTINGS.bot_reply_context_dir
 HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9-]{1,100}$")
 MAX_OUTBOUND_ATTACHMENTS = 20
@@ -180,6 +163,50 @@ def _read_mcp_draft(draft_id: str) -> dict[str, Any] | None:
     return draft if isinstance(draft, dict) else None
 
 
+def _load_mcp_drafts_unlocked() -> dict[str, Any]:
+    if not SETTINGS.mcp_drafts_file.exists():
+        return {}
+    try:
+        data = json.loads(SETTINGS.mcp_drafts_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _save_mcp_drafts_unlocked(drafts: dict[str, Any]) -> None:
+    SETTINGS.mcp_drafts_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp = SETTINGS.mcp_drafts_file.with_suffix(".tmp")
+    tmp.write_text(
+        json.dumps(drafts, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    tmp.chmod(0o600)
+    tmp.replace(SETTINGS.mcp_drafts_file)
+    SETTINGS.mcp_drafts_file.chmod(0o600)
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value or ""))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed
+
+
+def _mcp_draft_expired(draft: dict[str, Any]) -> bool:
+    ttl = SETTINGS.mcp_draft_ttl_seconds
+    if ttl <= 0:
+        return False
+    timestamp = _parse_iso_datetime(draft.get("sent_at")) or _parse_iso_datetime(
+        draft.get("created_at")
+    )
+    if timestamp is None:
+        return True
+    return datetime.now(UTC) - timestamp > timedelta(seconds=ttl)
+
+
 def _draft_payload_subset(raw: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key in (
@@ -202,6 +229,25 @@ def _draft_payload_subset(raw: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _validate_mcp_draft_for_send(raw: dict[str, Any], draft: dict[str, Any]) -> None:
+    if draft.get("sent"):
+        draft_id = str(raw.get("draft_id") or "").strip()
+        raise HTTPException(status_code=400, detail=f"draft_id already sent: {draft_id}")
+    draft_payload = draft.get("payload")
+    if not isinstance(draft_payload, dict):
+        draft_id = str(raw.get("draft_id") or "").strip()
+        raise HTTPException(
+            status_code=400, detail=f"invalid draft payload for draft_id: {draft_id}"
+        )
+    if json_dumps(_draft_payload_subset(raw)) != json_dumps(
+        _draft_payload_subset(draft_payload)
+    ):
+        draft_id = str(raw.get("draft_id") or "").strip()
+        raise HTTPException(
+            status_code=400, detail=f"send payload does not match draft_id: {draft_id}"
+        )
+
+
 def _path_is_relative_to(path: Path, root: Path) -> bool:
     try:
         path.relative_to(root)
@@ -221,13 +267,7 @@ def agent_attachment_roots() -> list[Path]:
 
 
 def _require_mcp_draft_confirmation(raw: dict[str, Any]) -> None:
-    try:
-        draft_id = clean_header_value(raw.get("draft_id"), "draft_id", limit=64)
-        approval_token = clean_header_value(
-            raw.get("approval_token"), "approval_token", limit=128
-        )
-    except EmailValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    draft_id, approval_token = _manual_draft_credentials(raw)
     if not draft_id or not approval_token:
         raise HTTPException(
             status_code=400,
@@ -238,25 +278,109 @@ def _require_mcp_draft_confirmation(raw: dict[str, Any]) -> None:
         raise HTTPException(
             status_code=400, detail=f"unknown or expired draft_id: {draft_id}"
         )
+    if _mcp_draft_expired(draft):
+        raise HTTPException(
+            status_code=400, detail=f"unknown or expired draft_id: {draft_id}"
+        )
     if str(draft.get("approval_token") or "").strip() != approval_token:
         raise HTTPException(
             status_code=400, detail=f"invalid approval token for draft_id: {draft_id}"
         )
-    if draft.get("sent"):
-        raise HTTPException(
-            status_code=400, detail=f"draft_id already sent: {draft_id}"
+    _validate_mcp_draft_for_send(raw, draft)
+
+
+def _manual_draft_credentials(raw: dict[str, Any]) -> tuple[str, str]:
+    try:
+        draft_id = clean_header_value(raw.get("draft_id"), "draft_id", limit=64)
+        approval_token = clean_header_value(
+            raw.get("approval_token"), "approval_token", limit=128
         )
-    draft_payload = draft.get("payload")
-    if not isinstance(draft_payload, dict):
+    except EmailValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return draft_id, approval_token
+
+
+def reserve_mcp_draft_send(raw: dict[str, Any]) -> str:
+    draft_id, approval_token = _manual_draft_credentials(raw)
+    if not draft_id or not approval_token:
         raise HTTPException(
-            status_code=400, detail=f"invalid draft payload for draft_id: {draft_id}"
+            status_code=400,
+            detail="draft_id and approval_token are required to send manual email",
         )
-    if json_dumps(_draft_payload_subset(raw)) != json_dumps(
-        _draft_payload_subset(draft_payload)
-    ):
-        raise HTTPException(
-            status_code=400, detail=f"send payload does not match draft_id: {draft_id}"
-        )
+
+    SETTINGS.mcp_drafts_lock_file.parent.mkdir(parents=True, exist_ok=True)
+    with SETTINGS.mcp_drafts_lock_file.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            drafts = _load_mcp_drafts_unlocked()
+            draft = drafts.get(draft_id)
+            if not isinstance(draft, dict):
+                raise HTTPException(
+                    status_code=400, detail=f"unknown or expired draft_id: {draft_id}"
+                )
+            if _mcp_draft_expired(draft):
+                drafts.pop(draft_id, None)
+                _save_mcp_drafts_unlocked(drafts)
+                raise HTTPException(
+                    status_code=400, detail=f"unknown or expired draft_id: {draft_id}"
+                )
+            if str(draft.get("approval_token") or "").strip() != approval_token:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"invalid approval token for draft_id: {draft_id}",
+                )
+            if draft.get("sending"):
+                raise HTTPException(
+                    status_code=409, detail=f"draft_id is already being sent: {draft_id}"
+                )
+            _validate_mcp_draft_for_send(raw, draft)
+            draft["sending"] = True
+            draft["sending_at"] = now_iso()
+            draft.pop("last_error", None)
+            drafts[draft_id] = draft
+            _save_mcp_drafts_unlocked(drafts)
+            return draft_id
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+
+
+def mark_mcp_draft_send_failed(draft_id: str, exc: Exception) -> None:
+    _update_mcp_draft_after_send(
+        draft_id,
+        {
+            "sending": False,
+            "last_error": exception_message(exc)[:1000],
+        },
+    )
+
+
+def mark_mcp_draft_sent(draft_id: str, result: dict[str, Any]) -> None:
+    _update_mcp_draft_after_send(
+        draft_id,
+        {
+            "sending": False,
+            "sent": True,
+            "sent_at": now_iso(),
+            "bridge_response": result,
+        },
+    )
+
+
+def _update_mcp_draft_after_send(draft_id: str, updates: dict[str, Any]) -> None:
+    if not draft_id:
+        return
+    SETTINGS.mcp_drafts_lock_file.parent.mkdir(parents=True, exist_ok=True)
+    with SETTINGS.mcp_drafts_lock_file.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file, fcntl.LOCK_EX)
+        try:
+            drafts = _load_mcp_drafts_unlocked()
+            draft = drafts.get(draft_id)
+            if isinstance(draft, dict):
+                draft.update(updates)
+                drafts[draft_id] = draft
+                _save_mcp_drafts_unlocked(drafts)
+        finally:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
 def request_headers_json(request: Request) -> str:
@@ -307,7 +431,22 @@ def _read_bot_reply_context(email_id: str) -> dict[str, Any] | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    if _bot_reply_context_expired(data):
+        _delete_bot_reply_context(email_id)
+        return None
+    return data
+
+
+def _bot_reply_context_expired(context: dict[str, Any]) -> bool:
+    ttl = SETTINGS.bot_reply_context_ttl_seconds
+    if ttl <= 0:
+        return False
+    created_at = _parse_iso_datetime(context.get("created_at"))
+    if created_at is None:
+        return True
+    return datetime.now(UTC) - created_at > timedelta(seconds=ttl)
 
 
 def _delete_bot_reply_context(email_id: str) -> None:

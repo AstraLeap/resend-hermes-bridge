@@ -4,6 +4,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -19,7 +20,7 @@ from utils.email_core import (
     clean_header_value,
     parse_email_addresses,
 )
-from utils.email_display import render_draft_markdown
+from utils.email_display import html_to_display_text, render_draft_markdown
 
 
 def _require_env(name: str) -> str:
@@ -150,6 +151,46 @@ def _normalize_manual_from_local(value: Any) -> str:
     return (clean_from_local(value) or OWNER_FROM_LOCAL).lower()
 
 
+_PREVIEW_TEMPLATE_PATTERNS = (
+    re.compile(r"请确认是否发送以下邮件"),
+    re.compile(r"确认后我会发送\s*Draft ID", re.IGNORECASE),
+    re.compile(r"邮件草稿已创建"),
+    re.compile(r"^\s*\|\s*(字段|项目|Field)\s*\|\s*(内容|Content)\s*\|", re.MULTILINE),
+    re.compile(r"^\s*\|\s*(Draft ID|From|To|Subject)\s*\|", re.IGNORECASE | re.MULTILINE),
+)
+
+
+def _normalize_body_text(value: Any) -> str:
+    text = str(value or "")
+    text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{4,}", "\n\n\n", text)
+    return text
+
+
+def _looks_like_chat_preview(value: str) -> bool:
+    text = _normalize_body_text(value)
+    if not text:
+        return False
+    return any(pattern.search(text) for pattern in _PREVIEW_TEMPLATE_PATTERNS)
+
+
+def _reject_chat_preview_body(field: str, value: str) -> None:
+    if _looks_like_chat_preview(value):
+        raise ValueError(
+            f"{field} looks like a chat preview or confirmation template; "
+            "pass only the actual email body to text/html"
+        )
+
+
+def _normalize_html_body(value: Any) -> str:
+    html = str(value or "").strip()
+    if not html:
+        return ""
+    _reject_chat_preview_body("html", html_to_display_text(html) or html)
+    return html
+
+
 def _format_outbound_payload(
     *,
     to: list[str],
@@ -184,11 +225,12 @@ def _format_outbound_payload(
     if clean_reply_to:
         payload["reply_to"] = clean_reply_to
 
-    body_text = str(text or "").strip()
-    body_html = str(html or "").strip()
+    body_text = _normalize_body_text(text)
+    body_html = _normalize_html_body(html)
     if not body_text and not body_html:
         raise ValueError("text or html body is required")
     if body_text:
+        _reject_chat_preview_body("text", body_text)
         payload["text"] = body_text
     if body_html:
         payload["html"] = body_html
@@ -249,6 +291,154 @@ async def _show_draft_via_bridge(
         raise RuntimeError(f"Bridge show-draft failed ({response.status_code}): {response.text}")
 
 
+def _load_draft(draft_id: str) -> dict[str, Any] | None:
+    draft_id = str(draft_id or "").strip()
+    if not draft_id:
+        return None
+    with _locked_drafts() as drafts:
+        stored = drafts.get(draft_id)
+        return dict(stored) if isinstance(stored, dict) else None
+
+
+def _new_draft_record(payload: dict[str, Any], *, revision_of: str = "") -> dict[str, Any]:
+    draft: dict[str, Any] = {
+        "created_at": _now_iso(),
+        "payload": payload,
+        "sent": False,
+        "approval_token": uuid.uuid4().hex,
+    }
+    if revision_of:
+        draft["revision_of"] = revision_of
+    return draft
+
+
+def _create_draft(payload: dict[str, Any], *, revision_of: str = "") -> tuple[str, dict[str, Any]]:
+    revision_of = str(revision_of or "").strip()
+    draft_id = uuid.uuid4().hex[:12]
+    draft = _new_draft_record(payload, revision_of=revision_of)
+    with _locked_drafts() as drafts:
+        if revision_of:
+            previous = drafts.get(revision_of)
+            if not isinstance(previous, dict):
+                raise ValueError(f"unknown or expired revision_of draft_id: {revision_of}")
+            revisions = previous.setdefault("revisions", [])
+            if isinstance(revisions, list):
+                revisions.append(draft_id)
+            drafts[revision_of] = previous
+        drafts[draft_id] = draft
+    return draft_id, draft
+
+
+def _payload_inputs_present(
+    *,
+    to: list[str],
+    subject: str,
+    text: str,
+    html: str,
+    from_local: str,
+    from_name: str,
+    cc: list[str] | None,
+    bcc: list[str] | None,
+    reply_to: list[str] | None,
+    attachments: list[dict[str, Any]] | None,
+    attachment_paths: list[str] | None,
+) -> bool:
+    return any(
+        [
+            bool(to),
+            bool(str(subject or "").strip()),
+            bool(str(text or "").strip()),
+            bool(str(html or "").strip()),
+            bool(str(from_local or "").strip()),
+            bool(str(from_name or "").strip()),
+            bool(cc),
+            bool(bcc),
+            bool(reply_to),
+            bool(attachments),
+            bool(attachment_paths),
+        ]
+    )
+
+
+def _draft_success_response(draft_id: str) -> dict[str, Any]:
+    return {
+        "status": "drafted",
+        "draft_id": draft_id,
+        "preview_delivered": True,
+    }
+
+
+def _draft_fallback_response(
+    *,
+    draft_id: str,
+    draft: dict[str, Any],
+    confirmation_markdown: str,
+    error: Exception,
+) -> dict[str, Any]:
+    return {
+        "status": "drafted",
+        "draft_id": draft_id,
+        "assistant_response": f"{confirmation_markdown}\n\n（无法通过桥接发送富文本预览：{error}）",
+        "display": confirmation_markdown,
+        "metadata": _redacted_draft(draft_id, draft),
+        "preview_delivered": False,
+    }
+
+
+async def _preview_draft(draft_id: str, draft: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(draft["payload"])
+    confirmation_markdown = _confirmation_markdown(draft_id, draft)
+    footer = f"确认后我会发送 Draft ID `{draft_id}`。"
+    try:
+        await _show_draft_via_bridge(
+            payload,
+            draft_id=draft_id,
+            title="请确认是否发送以下邮件：",
+            footer=footer,
+        )
+        return _draft_success_response(draft_id)
+    except Exception as exc:
+        return _draft_fallback_response(
+            draft_id=draft_id,
+            draft=draft,
+            confirmation_markdown=confirmation_markdown,
+            error=exc,
+        )
+
+
+def _load_draft_for_sending(draft_id: str) -> tuple[dict[str, Any], str]:
+    with _locked_drafts() as drafts:
+        stored = drafts.get(draft_id)
+        if not isinstance(stored, dict):
+            raise ValueError(f"unknown or expired draft_id: {draft_id}")
+        if stored.get("sent"):
+            raise ValueError(f"draft_id already sent: {draft_id}")
+        approval_token = str(stored.get("approval_token") or "").strip()
+        if not approval_token:
+            raise ValueError(f"draft_id is missing approval metadata; recreate the draft: {draft_id}")
+        return dict(stored), approval_token
+
+
+def _mark_draft_send_failed(draft_id: str, error: Exception) -> None:
+    with _locked_drafts() as drafts:
+        stored = drafts.get(draft_id)
+        if isinstance(stored, dict):
+            stored["sending"] = False
+            stored["last_error"] = str(error)[:1000]
+            drafts[draft_id] = stored
+
+
+def _mark_draft_sent(draft_id: str, result: dict[str, Any]) -> None:
+    with _locked_drafts() as drafts:
+        stored = drafts.get(draft_id)
+        if isinstance(stored, dict):
+            stored["sending"] = False
+            stored["sent"] = True
+            stored["sent_at"] = _now_iso()
+            stored["bridge_response"] = result
+            drafts[draft_id] = stored
+
+
 @mcp.tool()
 async def send_email(
     to: list[str],
@@ -263,22 +453,41 @@ async def send_email(
     attachments: list[dict[str, Any]] | None = None,
     attachment_paths: list[str] | None = None,
     draft_id: str = "",
+    revision_of: str = "",
     confirmed: bool = False,
 ) -> dict[str, Any]:
     """Create an email draft preview, or send a previously user-confirmed draft.
 
-    Use this tool to create a draft and display the standard preview to the user.
-    The tool will render the preview via render_email_markdown; do not generate
-    or display your own preview in the chat.
+    When the intended email is clear enough to draft, call this tool with
+    confirmed=false. It creates the draft and displays the standard preview to
+    the user. Do not write, summarize, or display your own preview in chat.
+
+    When the intended email is not clear enough to draft, do not call this tool.
+    Ask the user one concise clarification question instead.
 
     Rules:
-    - Only call this tool when the recipient (to), subject, and body (text or
-      html) are clear. If any required information is missing or ambiguous,
-      ask the user for clarification first and do not call this tool.
+    - Call this tool only when the recipient (to), subject, and body (text or
+      html) can be determined with reasonable confidence. It is OK to infer a
+      short subject from a clear body.
+    - If the recipient, body, sender identity, required attachment, factual
+      content, tone/style, or other user preference is missing or ambiguous,
+      ask for clarification first and do not call this tool.
     - First call with confirmed=false to create a draft. The preview is shown
       automatically; do not output any extra text in the chat.
+    - If this tool returns preview_delivered=true, end your turn silently; the
+      user already has the standard preview and confirmation prompt.
+    - If this tool returns assistant_response, show exactly assistant_response
+      to the user and wait for confirmation.
     - Only after the user confirms, call again with confirmed=true and the
       returned draft_id. The payload must match the draft exactly.
+    - If the user asks to modify a previous draft, create a new draft with the
+      revised payload. Omit draft_id, and pass the old draft id as revision_of
+      when known. Do not put a preview table or confirmation text in text/html.
+      Ensure the revised subject, body, attachments, and recipients are
+      internally consistent; do not preserve old subject wording that conflicts
+      with the revised body.
+    - confirmed=false with draft_id only re-shows that existing draft; it does
+      not update the draft content.
     - Manual sends without a prior draft_id are rejected.
 
     Use from_local to choose any valid local part under the configured domain.
@@ -287,18 +496,35 @@ async def send_email(
     objects with path, or filename plus base64 content.
     """
     draft_id = str(draft_id or "").strip()
-    draft = None
-    approval_token = ""
-    if draft_id:
-        with _locked_drafts() as drafts:
-            stored = drafts.get(draft_id)
-            draft = dict(stored) if isinstance(stored, dict) else None
-            if draft is None and confirmed:
-                raise ValueError(f"unknown or expired draft_id: {draft_id}")
+    revision_of = str(revision_of or "").strip()
 
-    if draft is not None:
-        payload = dict(draft["payload"])
-    else:
+    if not confirmed:
+        payload_input_present = _payload_inputs_present(
+            to=to,
+            subject=subject,
+            text=text,
+            html=html,
+            from_local=from_local,
+            from_name=from_name,
+            cc=cc,
+            bcc=bcc,
+            reply_to=reply_to,
+            attachments=attachments,
+            attachment_paths=attachment_paths,
+        )
+        if draft_id:
+            if revision_of:
+                raise ValueError("use revision_of without draft_id when creating a revised draft")
+            draft = _load_draft(draft_id)
+            if draft is None:
+                raise ValueError(f"unknown or expired draft_id: {draft_id}")
+            if payload_input_present:
+                raise ValueError(
+                    "confirmed=false with draft_id re-shows the existing draft; "
+                    "to revise it, omit draft_id and pass the old id as revision_of"
+                )
+            return await _preview_draft(draft_id, draft)
+
         payload = _format_outbound_payload(
             to=to,
             subject=subject,
@@ -312,68 +538,19 @@ async def send_email(
             attachments=attachments,
             attachment_paths=attachment_paths,
         )
-
-    if not confirmed:
-        if draft is None:
-            draft_id = uuid.uuid4().hex[:12]
-            draft = {
-                "created_at": _now_iso(),
-                "payload": payload,
-                "sent": False,
-                "approval_token": uuid.uuid4().hex,
-            }
-            with _locked_drafts() as drafts:
-                drafts[draft_id] = draft
-        assert draft is not None
-        confirmation_markdown = _confirmation_markdown(draft_id, draft)
-        footer = f"确认后我会发送 Draft ID `{draft_id}`。"
-        try:
-            await _show_draft_via_bridge(
-                payload,
-                draft_id=draft_id,
-                title="请确认是否发送以下邮件：",
-                footer=footer,
-            )
-            return {
-                "status": "drafted",
-                "draft_id": draft_id,
-                "assistant_response": "",
-                "display": "",
-                "metadata": _redacted_draft(draft_id, draft),
-                "next_step": "Do not send any message. The formatted draft preview is already displayed to the user. Wait for the user to confirm; when they do, call send_email again with confirmed=true and the same draft_id.",
-            }
-        except Exception as exc:
-            return {
-                "status": "drafted",
-                "draft_id": draft_id,
-                "assistant_response": f"{confirmation_markdown}\n\n（无法通过桥接发送富文本预览：{exc}）",
-                "display": confirmation_markdown,
-                "metadata": _redacted_draft(draft_id, draft),
-                "next_step": "The draft preview could not be pushed to the chat. Show the assistant_response to the user and wait for confirmation; then call send_email again with confirmed=true and the same draft_id.",
-            }
+        new_draft_id, draft = _create_draft(payload, revision_of=revision_of)
+        return await _preview_draft(new_draft_id, draft)
 
     if not draft_id:
         raise ValueError(
             "confirmed=true requires a draft_id from a prior draft response; "
             "first create a draft and show it to the user for confirmation"
         )
+    if revision_of:
+        raise ValueError("confirmed=true uses draft_id only; do not pass revision_of")
 
-    if draft_id:
-        with _locked_drafts() as drafts:
-            stored = drafts.get(draft_id)
-            if not isinstance(stored, dict):
-                raise ValueError(f"unknown or expired draft_id: {draft_id}")
-            if stored.get("sent"):
-                raise ValueError(f"draft_id already sent: {draft_id}")
-            if stored.get("sending"):
-                raise ValueError(f"draft_id is already being sent: {draft_id}")
-            approval_token = str(stored.get("approval_token") or "").strip()
-            if not approval_token:
-                raise ValueError(f"draft_id is missing approval metadata; recreate the draft: {draft_id}")
-            stored["sending"] = True
-            stored["sending_at"] = _now_iso()
-            stored.pop("last_error", None)
-            drafts[draft_id] = stored
+    draft, approval_token = _load_draft_for_sending(draft_id)
+    payload = dict(draft["payload"])
 
     payload["confirmed"] = True
     payload["draft_id"] = draft_id
@@ -381,23 +558,9 @@ async def send_email(
     try:
         result = await _send_via_bridge(payload)
     except Exception as exc:
-        if draft_id:
-            with _locked_drafts() as drafts:
-                stored = drafts.get(draft_id)
-                if isinstance(stored, dict):
-                    stored["sending"] = False
-                    stored["last_error"] = str(exc)[:1000]
-                    drafts[draft_id] = stored
+        _mark_draft_send_failed(draft_id, exc)
         raise
-    if draft_id:
-        with _locked_drafts() as drafts:
-            stored = drafts.get(draft_id)
-            if isinstance(stored, dict):
-                stored["sending"] = False
-                stored["sent"] = True
-                stored["sent_at"] = _now_iso()
-                stored["bridge_response"] = result
-                drafts[draft_id] = stored
+    _mark_draft_sent(draft_id, result)
     return {
         "status": "sent",
         "assistant_response": _sent_notification(result),

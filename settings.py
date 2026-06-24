@@ -96,6 +96,8 @@ class Settings:
     notification_target: str
     ai_name: str
     bot_reply_context_dir: Path
+    bot_reply_context_ttl_seconds: int
+    mcp_draft_ttl_seconds: int
     generated_attachment_roots: list[Path]
 
     @property
@@ -139,5 +141,7 @@ def load_settings() -> Settings:
         notification_target=os.getenv("NOTIFICATION_TARGET", "telegram").strip(),
         ai_name=os.getenv("AI_NAME", "卡宝").strip(),
         bot_reply_context_dir=data_dir / "bot_reply_contexts",
+        bot_reply_context_ttl_seconds=int(os.getenv("BOT_REPLY_CONTEXT_TTL_SECONDS", "600")),
+        mcp_draft_ttl_seconds=int(os.getenv("RESEND_MCP_DRAFT_TTL_SECONDS", "604800")),
         generated_attachment_roots=generated_attachment_roots(),
     )

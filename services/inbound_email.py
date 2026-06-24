@@ -40,21 +40,7 @@ def is_to_inbound_address(email: dict[str, Any], event_data: dict[str, Any]) -> 
 
 
 def is_relevant_attachment(attachment: dict[str, Any]) -> bool:
-    filename = str(attachment.get("filename") or "").lower()
-    content_type = str(attachment.get("content_type") or "").lower()
-    disposition = str(attachment.get("content_disposition") or "").lower()
-    suffix = Path(filename).suffix
-    if content_type.startswith("image/"):
-        return True
-    if disposition == "attachment":
-        return True
-    if suffix in bridge_app.RELEVANT_EXTENSIONS:
-        return True
-    if filename and disposition != "inline":
-        return True
-    if filename and disposition == "inline":
-        return True
-    return bool(content_type and not content_type.startswith("image/"))
+    return True
 
 
 def read_text_snippet(
@@ -83,7 +69,7 @@ def record_fetched_attachment_metadata(
             or "attachment",
             "content_type": attachment.get("content_type"),
             "size": int(attachment.get("size") or 0),
-            "relevant": is_relevant_attachment(attachment),
+            "relevant": True,
         }
         bridge_app.record_attachment_history(
             email_id=email_id, raw_attachment=attachment, item=item
@@ -156,18 +142,17 @@ async def download_relevant_attachments(
             attachment.get("filename") or attachment.get("id") or "attachment"
         )
         size = int(attachment.get("size") or 0)
-        relevant = is_relevant_attachment(attachment)
         item: dict[str, Any] = {
             "id": attachment.get("id"),
             "filename": filename,
             "content_type": attachment.get("content_type"),
             "size": size,
-            "relevant": relevant,
+            "relevant": True,
         }
         results.append(item)
 
         download_url = attachment.get("download_url")
-        if not relevant or not download_url:
+        if not download_url:
             bridge_app.record_attachment_history(
                 email_id=email_id, raw_attachment=attachment, item=item
             )
@@ -229,7 +214,7 @@ async def download_relevant_attachments(
             bridge_app.record_attachment_history(
                 email_id=email_id, raw_attachment=attachment, item=item
             )
-            raise
+            continue
 
         bridge_app.record_attachment_history(
             email_id=email_id, raw_attachment=attachment, item=item
@@ -399,12 +384,7 @@ async def handle_hermes_decision(
     )
 
     await bridge_app.notify_telegram(
-        build_activity_summary(
-            email,
-            decision,
-            reply_payload=reply_payload,
-            reply_id=reply_id,
-        ),
+        build_activity_summary(decision),
         email_id=email_id,
         attachment_paths=owner_report_attachments,
     )
@@ -470,13 +450,7 @@ async def process_event_safe(event: dict[str, Any], svix_id: str) -> None:
         )
 
 
-def build_activity_summary(
-    email: dict[str, Any],
-    decision: dict[str, Any],
-    *,
-    reply_payload: dict[str, Any] | None = None,
-    reply_id: str | None = None,
-) -> str:
+def build_activity_summary(decision: dict[str, Any]) -> str:
     owner_report = str(decision.get("owner_report") or "").strip()
     return f"**任务总结：**\n\n{owner_report}" if owner_report else "**任务总结：**"
 

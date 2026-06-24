@@ -13,6 +13,22 @@ def _bridge_app():
     return bridge_app
 
 
+async def _communicate_or_kill(
+    process: asyncio.subprocess.Process,
+    *,
+    timeout: float,
+) -> tuple[bytes, bytes]:
+    try:
+        return await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except TimeoutError:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        await process.communicate()
+        raise
+
+
 def context_message_for_notification(
     target: str,
     email_id: str | None,
@@ -98,7 +114,7 @@ async def send_hermes_notification_text(target: str, message: str) -> tuple[str,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=90)
+    stdout, stderr = await _communicate_or_kill(process, timeout=90)
     stdout_text = stdout.decode(errors="replace")
     stderr_text = stderr.decode(errors="replace")
     if process.returncode != 0:
@@ -154,8 +170,8 @@ async def notify_telegram(
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            media_stdout, media_stderr = await asyncio.wait_for(
-                media_process.communicate(), timeout=90
+            media_stdout, media_stderr = await _communicate_or_kill(
+                media_process, timeout=90
             )
             stdout_text += f"\n[MEDIA {path}]\n{media_stdout.decode(errors='replace')}"
             stderr_text += f"\n[MEDIA {path}]\n{media_stderr.decode(errors='replace')}"

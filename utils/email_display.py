@@ -303,11 +303,12 @@ def render_processing_result_notice(
     show_attachments: bool = True,
 ) -> str:
     if reply_payload:
+        footer = f"Resend ID: `{reply_id}`" if reply_id else None
         notice = render_email_markdown(
             reply_payload,
             title="Hermes 已自动回复：",
             domain=domain,
-            email_id=reply_id,
+            footer=footer,
             notice_limit=notice_limit,
             show_attachments=show_attachments,
         )

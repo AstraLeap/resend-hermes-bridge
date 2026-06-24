@@ -21,6 +21,22 @@ class _BridgeAppProxy:
 bridge_app = _BridgeAppProxy()
 
 
+async def _communicate_or_kill(
+    process: asyncio.subprocess.Process,
+    *,
+    timeout: float,
+) -> tuple[bytes, bytes]:
+    try:
+        return await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except TimeoutError:
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        await process.communicate()
+        raise
+
+
 @lru_cache(maxsize=8)
 def load_prompt_template(name: str) -> str:
     path = APP_DIR / "prompts" / name
@@ -224,8 +240,8 @@ async def run_hermes_task(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(),
+        stdout, stderr = await _communicate_or_kill(
+            process,
             timeout=bridge_app.SETTINGS.hermes_timeout_seconds,
         )
         stdout_text = stdout.decode(errors="replace")
