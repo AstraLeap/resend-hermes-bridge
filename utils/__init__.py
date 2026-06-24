@@ -7,8 +7,12 @@ from utils.email_core import (
     parse_email_addresses,
     resolve_sender,
 )
-from utils.email_display import render_draft_markdown, render_email_markdown
-from utils.notices import render_inbound_email_notice, render_processing_result_notice
+from utils.email_display import (
+    render_draft_markdown,
+    render_email_markdown,
+    render_inbound_email_notice,
+    render_processing_result_notice,
+)
 
 __all__ = [
     "EmailValidationError",

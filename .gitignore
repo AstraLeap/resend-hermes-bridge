@@ -1,21 +1,30 @@
+# Virtual environments
 .venv/
 .test-venv/
 .test-venv-current/
 .test-hermes/
+
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 build/
 dist/
 
+# Environment and secrets
 .env
-state.db
-state.db-*
-attachments/
-bot_reply_contexts/
-mcp_email_drafts.json
-mcp_email_drafts.json.lock
 
+# Runtime data
+# The bridge stores state.db, attachments, generated files, bot reply contexts,
+# and MCP drafts under BRIDGE_DATA_DIR (defaults to ./data).
+data/
+
+# Logs and tool caches
 *.log
 .pytest_cache/
 .ruff_cache/
+
+
+# Runtime MCP draft files (legacy root location)
+mcp_email_drafts.json
+mcp_email_drafts.json.lock

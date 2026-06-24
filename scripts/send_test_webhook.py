@@ -3,16 +3,15 @@
 
 from __future__ import annotations
 
-import base64
-import hmac
 import json
 import os
 import secrets
-import time
+from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urljoin
 
 import httpx
+from svix.webhooks import Webhook
 
 
 def load_env_file(path: Path) -> None:
@@ -31,15 +30,16 @@ def load_env_file(path: Path) -> None:
 
 def generate_svix_headers(secret: str, payload: bytes) -> dict[str, str]:
     webhook_id = secrets.token_hex(16)
-    timestamp = str(int(time.time()))
-    signed_content = f"{timestamp}.{payload.decode()}".encode()
-    signature = base64.b64encode(
-        hmac.new(secret.encode(), signed_content, "sha256").digest()
-    ).decode()
+    timestamp = datetime.now(UTC)
+    signature = Webhook(secret).sign(
+        msg_id=webhook_id,
+        timestamp=timestamp,
+        data=payload.decode(),
+    )
     return {
         "svix-id": webhook_id,
-        "svix-timestamp": timestamp,
-        "svix-signature": f"v1,{signature}",
+        "svix-timestamp": str(int(timestamp.timestamp())),
+        "svix-signature": signature,
     }
 
 
@@ -58,11 +58,13 @@ def main() -> None:
     bot_local = os.environ.get("BOT_FROM_LOCAL", "bot")
     to_address = f"{bot_local}@{domain}"
     from_address = "tester@example.com"
+    email_id = os.environ.get("RESEND_TEST_EMAIL_ID", f"test-{secrets.token_hex(8)}")
 
     payload = {
         "type": "email.received",
-        "created_at": "2024-01-01T00:00:00Z",
+        "created_at": datetime.now(UTC).isoformat(),
         "data": {
+            "email_id": email_id,
             "from": from_address,
             "to": [to_address],
             "subject": "Test webhook from resend-hermes-bridge",

@@ -11,7 +11,7 @@ ok() { printf '\033[1;32m%s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m%s\033[0m\n' "$*"; }
 err() { printf '\033[1;31m%s\033[0m\n' "$*"; }
 
-info "== Resend Hermes Bridge Setup =="
+info "== Resend Hermes Bridge Install =="
 
 # Python version check
 PYTHON_BIN="${PYTHON_BIN:-python3}"
@@ -43,13 +43,19 @@ if [[ ! -f "$ENV_FILE" ]]; then
     cp "$ENV_EXAMPLE" "$ENV_FILE"
 fi
 
+is_placeholder() {
+    local value="$1"
+    [[ -z "$value" ]] ||
+    [[ "$value" == *_replace_me ]] ||
+    [[ "$value" == *change-me* ]]
+}
+
 # Helper to read or update a value in .env
 set_env_value() {
     local key="$1"
     local value="$2"
-    if grep -qE "^#?\s*${key}=" "$ENV_FILE"; then
-        # Replace existing line (commented or not)
-        sed -i "s|^#\?\s*${key}=.*|${key}=${value}|" "$ENV_FILE"
+    if grep -qE "^[[:space:]]*#?[[:space:]]*${key}=" "$ENV_FILE"; then
+        sed -E -i "s|^[[:space:]]*#?[[:space:]]*${key}=.*|${key}=${value}|" "$ENV_FILE"
     else
         echo "${key}=${value}" >> "$ENV_FILE"
     fi
@@ -59,8 +65,9 @@ read_env_value() {
     local key="$1"
     local default="${2:-}"
     local current
-    current="$(grep -E "^#?\s*${key}=" "$ENV_FILE" | tail -1 | sed "s|^#\?\s*${key}=||" || true)"
-    if [[ -z "$current" ]] || [[ "$current" == "re_replace_me" ]] || [[ "$current" == "whsec_replace_me" ]] || [[ "$current" == "change-me-generate-with-openssl-rand-hex-32" ]]; then
+    current="$(grep -E "^[[:space:]]*#?[[:space:]]*${key}=" "$ENV_FILE" | tail -1 || true)"
+    current="${current#*=}"
+    if is_placeholder "$current"; then
         current="$default"
     fi
     echo "$current"
@@ -71,12 +78,14 @@ prompt() {
     local label="$2"
     local default="$3"
     local is_secret="${4:-false}"
-    local current="$(read_env_value "$key" "$default")"
+    local current
+    current="$(read_env_value "$key" "$default")"
     local prompt_text="$label"
     if [[ -n "$current" ]] && [[ "$current" != "$default" ]]; then
         prompt_text="$label [$current]"
     fi
 
+    local value=""
     if [[ "$is_secret" == "true" ]]; then
         read -rsp "$prompt_text: " value
         echo
@@ -91,8 +100,8 @@ prompt() {
 }
 
 info "Please fill in the required configuration:"
-prompt "RESEND_API_KEY" "Resend API key" ""
-prompt "RESEND_WEBHOOK_SECRET" "Resend webhook signing secret" ""
+prompt "RESEND_API_KEY" "Resend API key" "" true
+prompt "RESEND_WEBHOOK_SECRET" "Resend webhook signing secret" "" true
 prompt "RESEND_DOMAIN" "Verified Resend sender domain (without @)" "example.com"
 prompt "BOT_FROM_LOCAL" "Bot inbox local part (e.g. bot)" "bot"
 prompt "OWNER_FROM_LOCAL" "Owner inbox local part (e.g. mail)" "mail"
@@ -100,12 +109,22 @@ prompt "AI_NAME" "Display name for owner notices" "Hermes"
 prompt "NOTIFICATION_TARGET" "Notification platform (telegram/weixin/qqbot/wecom/discord/slack/signal)" "telegram"
 
 # Check Hermes availability
+HERMES_CANDIDATES=("$HOME/.local/bin/hermes" "$HOME/.hermes/bin/hermes" "/usr/local/bin/hermes")
+HERMES_FOUND=""
+
 if command -v hermes >/dev/null 2>&1; then
-    ok "Hermes CLI found: $(command -v hermes)"
-elif [[ -x "$HOME/.local/bin/hermes" ]]; then
-    ok "Hermes CLI found: $HOME/.local/bin/hermes"
-elif [[ -x "$HOME/.hermes/bin/hermes" ]]; then
-    ok "Hermes CLI found: $HOME/.hermes/bin/hermes"
+    HERMES_FOUND="$(command -v hermes)"
+else
+    for candidate in "${HERMES_CANDIDATES[@]}"; do
+        if [[ -x "$candidate" ]]; then
+            HERMES_FOUND="$candidate"
+            break
+        fi
+    done
+fi
+
+if [[ -n "$HERMES_FOUND" ]]; then
+    ok "Hermes CLI found: $HERMES_FOUND"
 else
     warn "Hermes CLI not found on PATH, ~/.local/bin, ~/.hermes/bin, or /usr/local/bin"
     warn "Make sure Hermes is installed before running the bridge"
@@ -146,7 +165,7 @@ if [[ "$install_mcp" =~ ^[Yy]$ ]]; then
     "$VENV_DIR/bin/python" "$ROOT_DIR/manage.py" install-mcp || warn "MCP install failed; you can run it manually later"
 fi
 
-ok "Setup complete. Edit $ENV_FILE if needed, then start the bridge."
+ok "Install complete. Edit $ENV_FILE if needed, then start the bridge."
 info "Run the bridge directly:"
 info "  $VENV_DIR/bin/uvicorn app:app --host 127.0.0.1 --port 8765"
 info ""

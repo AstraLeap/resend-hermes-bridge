@@ -7,13 +7,13 @@ import os
 import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import httpx
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+from settings import APP_DIR
 from utils.email_core import (
     clean_from_local,
     clean_header_value,
@@ -29,12 +29,11 @@ def _require_env(name: str) -> str:
     return value.strip()
 
 
-APP_DIR = Path(__file__).resolve().parent
 load_dotenv(APP_DIR / ".env")
 
 BRIDGE_URL = os.getenv("RESEND_BRIDGE_URL", "http://127.0.0.1:8765").rstrip("/")
-DRAFTS_FILE = APP_DIR / "mcp_email_drafts.json"
-DRAFTS_LOCK_FILE = APP_DIR / "mcp_email_drafts.json.lock"
+DRAFTS_FILE = APP_DIR / "data" / "mcp_email_drafts.json"
+DRAFTS_LOCK_FILE = APP_DIR / "data" / "mcp_email_drafts.json.lock"
 DRAFT_TTL_SECONDS = int(os.getenv("RESEND_MCP_DRAFT_TTL_SECONDS", "604800"))
 FROM_DOMAIN = _require_env("RESEND_DOMAIN").lower()
 BOT_FROM_LOCAL = (
@@ -138,26 +137,16 @@ def _confirmation_markdown(draft_id: str, draft: dict[str, Any]) -> str:
         title="请确认是否发送以下邮件：",
         domain=FROM_DOMAIN,
         footer=f"确认后我会发送 Draft ID `{draft_id}`。",
+        show_attachments=False,
     )
 
 
-def _draft_payload_for_display(payload: dict[str, Any]) -> dict[str, Any]:
-    display_payload = dict(payload)
-    attachments = []
-    for item in payload.get("attachments") or []:
-        if isinstance(item, dict):
-            attachment = {
-                key: value
-                for key, value in item.items()
-                if key in {"filename", "path", "local_path", "content_type", "content_id", "size", "id"}
-                and value not in (None, "", [])
-            }
-            if item.get("content"):
-                attachment["content_redacted"] = True
-            attachments.append(attachment)
-    if attachments:
-        display_payload["attachments"] = attachments
-    return display_payload
+def _sent_notification(result: dict[str, Any]) -> str:
+    resend_id = result.get("resend_id") or ""
+    parts = ["邮件已通过 Resend 发送。"]
+    if resend_id:
+        parts.append(f"Resend ID: `{resend_id}`")
+    return "\n".join(parts)
 
 
 def _normalize_manual_from_local(value: Any) -> str:
@@ -239,6 +228,30 @@ async def _send_via_bridge(payload: dict[str, Any]) -> dict[str, Any]:
     return response_body if isinstance(response_body, dict) else {"data": response_body}
 
 
+async def _show_draft_via_bridge(
+    payload: dict[str, Any],
+    *,
+    draft_id: str,
+    title: str = "请确认是否发送以下邮件：",
+    footer: str = "",
+) -> None:
+    body = {
+        "payload": payload,
+        "draft_id": draft_id,
+        "title": title,
+    }
+    if footer:
+        body["footer"] = footer
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{BRIDGE_URL}/show-draft",
+            headers={"Content-Type": "application/json"},
+            json=body,
+        )
+    if response.status_code >= 400:
+        raise RuntimeError(f"Bridge show-draft failed ({response.status_code}): {response.text}")
+
+
 @mcp.tool()
 async def send_email(
     to: list[str],
@@ -300,22 +313,11 @@ async def send_email(
         payload["confirmed"] = True
         payload["auto_reply_email_id"] = auto_reply_email_id.strip()
         result = await _send_via_bridge(payload)
+        sent_message = _sent_notification(result)
         return {
             "status": "sent",
-            "assistant_response": render_draft_markdown(
-                result.get("outbound_id") or uuid.uuid4().hex[:12],
-                {"payload": _draft_payload_for_display(payload), "created_at": _now_iso(), "sent": True},
-                title="已发送以下邮件：",
-                domain=FROM_DOMAIN,
-                footer=f"Resend ID: `{result.get('resend_id') or ''}`",
-            ),
-            "display": render_draft_markdown(
-                result.get("outbound_id") or uuid.uuid4().hex[:12],
-                {"payload": _draft_payload_for_display(payload), "created_at": _now_iso(), "sent": True},
-                title="已发送以下邮件：",
-                domain=FROM_DOMAIN,
-                footer=f"Resend ID: `{result.get('resend_id') or ''}`",
-            ),
+            "assistant_response": sent_message,
+            "display": sent_message,
             "bridge_response": result,
         }
 
@@ -332,14 +334,25 @@ async def send_email(
                 drafts[draft_id] = draft
         assert draft is not None
         confirmation_markdown = _confirmation_markdown(draft_id, draft)
+        footer = f"确认后我会发送 Draft ID `{draft_id}`。"
+        try:
+            await _show_draft_via_bridge(
+                payload,
+                draft_id=draft_id,
+                title="请确认是否发送以下邮件：",
+                footer=footer,
+            )
+            acknowledgment = f"草稿预览已发送到当前对话，请确认是否发送这封邮件。{footer}"
+        except Exception as exc:
+            acknowledgment = f"{confirmation_markdown}\n\n（无法通过桥接发送富文本预览：{exc}）"
         return {
             "status": "drafted",
             "draft_id": draft_id,
-            "assistant_response": confirmation_markdown,
-            "display": confirmation_markdown,
+            "assistant_response": acknowledgment,
+            "display": acknowledgment,
             "confirmation_markdown": confirmation_markdown,
             "metadata": _redacted_draft(draft_id, draft),
-            "next_step": "Reply to the user with assistant_response verbatim. Do not rewrite the table, body, labels, wording, separators, or confirmation prompt. Call send_email again with confirmed=true after the user confirms sending this draft.",
+            "next_step": "Reply to the user with assistant_response verbatim. Do not rewrite the wording or confirmation prompt. Call send_email again with confirmed=true after the user confirms sending this draft.",
         }
 
     if not draft_id:
@@ -390,20 +403,8 @@ async def send_email(
                 drafts[draft_id] = stored
     return {
         "status": "sent",
-        "assistant_response": render_draft_markdown(
-            result.get("outbound_id") or uuid.uuid4().hex[:12],
-            {"payload": _draft_payload_for_display(payload), "created_at": _now_iso(), "sent": True},
-            title="已发送以下邮件：",
-            domain=FROM_DOMAIN,
-            footer=f"Resend ID: `{result.get('resend_id') or ''}`",
-        ),
-        "display": render_draft_markdown(
-            result.get("outbound_id") or uuid.uuid4().hex[:12],
-            {"payload": _draft_payload_for_display(payload), "created_at": _now_iso(), "sent": True},
-            title="已发送以下邮件：",
-            domain=FROM_DOMAIN,
-            footer=f"Resend ID: `{result.get('resend_id') or ''}`",
-        ),
+        "assistant_response": _sent_notification(result),
+        "display": _sent_notification(result),
         "bridge_response": result,
     }
 

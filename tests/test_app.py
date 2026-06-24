@@ -1,6 +1,8 @@
 import asyncio
+import base64
 import json
 import os
+import subprocess
 import sys
 import types
 from dataclasses import replace
@@ -35,8 +37,40 @@ sys.modules.setdefault("mcp", _mcp_module)
 sys.modules.setdefault("mcp.server", _mcp_server_module)
 sys.modules.setdefault("mcp.server.fastmcp", _mcp_fastmcp_module)
 
+from svix.webhooks import Webhook  # noqa: E402
+
 import resend_mcp_server  # noqa: E402
-import utils.notices as notices  # noqa: E402
+import services.hermes_context as hermes_context  # noqa: E402
+import services.inbound_email as inbound_email_service  # noqa: E402
+import services.notification as notification_service  # noqa: E402
+import services.telegram_rich as telegram_rich  # noqa: E402
+import utils.email_display as notices  # noqa: E402
+from scripts.send_test_webhook import generate_svix_headers  # noqa: E402
+
+
+def test_mcp_dependency_is_available_to_runtime_python():
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import resend_mcp_server; print('ok')",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "ok" in completed.stdout
+
+
+def test_send_test_webhook_generates_valid_svix_signature():
+    secret = "whsec_" + base64.b64encode(b"test-secret").decode("ascii")
+    payload = {"type": "email.received", "data": {"email_id": "email-1"}}
+    body = json.dumps(payload).encode()
+
+    verified = Webhook(secret).verify(body.decode(), generate_svix_headers(secret, body))
+
+    assert verified == payload
 
 
 def test_parse_loose_reply_decision_with_unescaped_quotes():
@@ -71,6 +105,30 @@ def test_bot_auto_reply_uses_inbound_sender_address():
     assert payload["from_local"] == "bot"
     assert payload["to"] == ["user@example.com"]
     assert payload["text"] == "一只小狗"
+
+
+def test_bot_auto_reply_uses_configured_bot_sender(monkeypatch):
+    monkeypatch.setattr(app, "SETTINGS", replace(app.SETTINGS, bot_from_local="assistant"))
+
+    payload = app.build_resend_reply_payload(
+        {
+            "from": "user@example.com",
+            "subject": "测试",
+            "message_id": "<message@example.com>",
+            "headers": {},
+        },
+        {
+            "action": "reply",
+            "reply_text": "已处理",
+        },
+    )
+    normalized = app.normalize_send_payload(
+        {**payload, "confirmed": True, "auto_reply_email_id": "email-1"},
+        allow_bot_sender=True,
+    )
+
+    assert payload["from_local"] == "assistant"
+    assert normalized["from"] == f"assistant@{app.SETTINGS.resend_domain}"
 
 
 def test_parse_task_decision_preserves_execution_fields():
@@ -125,15 +183,25 @@ def test_activity_summary_mentions_execution_and_optional_reply():
 
 def test_non_bot_email_notice_uses_owner_title_without_routing_labels(monkeypatch):
     messages = []
+    sent_attachment_paths = []
     statuses = []
 
     async def fake_notify(message, *, email_id=None, attachment_paths=None):
         messages.append(message)
+        sent_attachment_paths.append(attachment_paths)
+
+    async def fake_download_attachments_for_notification(_email_id, _attachments):
+        return []
 
     def fake_update_status(email_id, status, error=None):
         statuses.append((email_id, status, error))
 
     monkeypatch.setattr(app, "notify_telegram", fake_notify)
+    monkeypatch.setattr(
+        inbound_email_service,
+        "download_attachments_for_notification",
+        fake_download_attachments_for_notification,
+    )
     monkeypatch.setattr(app, "update_inbound_status", fake_update_status)
 
     asyncio.run(
@@ -154,20 +222,79 @@ def test_non_bot_email_notice_uses_owner_title_without_routing_labels(monkeypatc
     assert "收到非 bot 邮件" not in messages[0]
     assert "邮件不是发给" not in messages[0]
     assert messages[0].startswith("主人你有一封新邮件~")
+    assert sent_attachment_paths == [[]]
     assert statuses == [("email-1", "notified", None)]
+
+
+def test_non_bot_email_notice_sends_downloaded_attachment_paths(monkeypatch):
+    notifications = []
+
+    async def fake_notify(message, *, email_id=None, attachment_paths=None):
+        notifications.append(
+            {
+                "message": message,
+                "email_id": email_id,
+                "attachment_paths": attachment_paths,
+            }
+        )
+
+    async def fake_download_attachments_for_notification(email_id, attachments):
+        assert email_id == "email-1"
+        assert attachments == [{"filename": "image.jpg"}]
+        return [
+            {"local_path": "/tmp/image.jpg"},
+            {"filename": "skipped.txt"},
+        ]
+
+    monkeypatch.setattr(app, "notify_telegram", fake_notify)
+    monkeypatch.setattr(
+        inbound_email_service,
+        "download_attachments_for_notification",
+        fake_download_attachments_for_notification,
+    )
+    monkeypatch.setattr(app, "update_inbound_status", lambda *_args, **_kwargs: None)
+
+    asyncio.run(
+        app.notify_non_bot_email(
+            "email-1",
+            {
+                "id": "email-1",
+                "from": "sender@example.com",
+                "to": ["owner@example.com"],
+                "subject": "Hello",
+                "text": "Body",
+            },
+            [{"filename": "image.jpg"}],
+        )
+    )
+
+    assert len(notifications) == 1
+    assert notifications[0]["message"].startswith("主人你有一封新邮件~")
+    assert notifications[0]["email_id"] == "email-1"
+    assert notifications[0]["attachment_paths"] == ["/tmp/image.jpg"]
 
 
 def test_bot_email_notice_uses_kabao_title(monkeypatch):
     messages = []
+    sent_attachment_paths = []
     statuses = []
 
     async def fake_notify(message, *, email_id=None, attachment_paths=None):
         messages.append(message)
+        sent_attachment_paths.append(attachment_paths)
+
+    async def fake_download_attachments_for_notification(_email_id, _attachments):
+        return []
 
     def fake_update_status(email_id, status, error=None):
         statuses.append((email_id, status, error))
 
     monkeypatch.setattr(app, "notify_telegram", fake_notify)
+    monkeypatch.setattr(
+        inbound_email_service,
+        "download_attachments_for_notification",
+        fake_download_attachments_for_notification,
+    )
     monkeypatch.setattr(app, "update_inbound_status", fake_update_status)
 
     asyncio.run(
@@ -187,6 +314,7 @@ def test_bot_email_notice_uses_kabao_title(monkeypatch):
     assert messages
     assert messages[0].startswith("卡宝收到邮件啦！正在处理中哦~")
     assert "收到发给" not in messages[0]
+    assert sent_attachment_paths == [[]]
     assert statuses == [("email-1", "processing", None)]
 
 
@@ -196,8 +324,16 @@ def test_bot_email_notice_ignores_custom_title_env(monkeypatch):
     async def fake_notify(message, *, email_id=None, attachment_paths=None):
         messages.append(message)
 
+    async def fake_download_attachments_for_notification(_email_id, _attachments):
+        return []
+
     monkeypatch.setenv("NOTIFICATION_BOT_TITLE", "不应该生效")
     monkeypatch.setattr(app, "notify_telegram", fake_notify)
+    monkeypatch.setattr(
+        inbound_email_service,
+        "download_attachments_for_notification",
+        fake_download_attachments_for_notification,
+    )
     monkeypatch.setattr(app, "update_inbound_status", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(app, "SETTINGS", replace(app.SETTINGS, ai_name="Hermes"))
 
@@ -223,6 +359,7 @@ def test_notify_telegram_uses_hermes_send_by_default(monkeypatch, tmp_path):
     commands = []
     updates = []
     steps = []
+    context_calls = []
     message = "| 字段 | 内容 |\n| --- | --- |\n| From | sender@example.com |"
     hermes_bin = tmp_path / "hermes"
     hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -238,8 +375,19 @@ def test_notify_telegram_uses_hermes_send_by_default(monkeypatch, tmp_path):
         commands.append(args)
         return FakeProcess()
 
+    async def fake_send_telegram_rich_text(_target, _body):
+        return telegram_rich.TelegramRichSendResult(
+            sent=False,
+            reason="not rich eligible",
+        )
+
     monkeypatch.setattr(
         app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+    monkeypatch.setattr(
+        notification_service,
+        "send_telegram_rich_text",
+        fake_send_telegram_rich_text,
     )
     monkeypatch.setattr(
         app,
@@ -258,12 +406,486 @@ def test_notify_telegram_uses_hermes_send_by_default(monkeypatch, tmp_path):
         lambda **kwargs: steps.append(kwargs),
     )
 
+    def fake_append_notification_to_user_context(target, body):
+        context_calls.append((target, body))
+        return hermes_context.HermesContextAppendResult(
+            recorded=True,
+            session_id="session-1",
+            message_id=123,
+        )
+
+    monkeypatch.setattr(
+        notification_service,
+        "append_notification_to_user_context",
+        fake_append_notification_to_user_context,
+    )
+
     asyncio.run(app.notify_telegram(message, email_id="email-1"))
 
+    context_message = notification_service.context_message_for_notification(
+        "telegram",
+        "email-1",
+        message,
+        kind="text",
+    )
     assert commands == [(str(hermes_bin), "send", "--to", "telegram", message)]
+    assert context_calls == [("telegram", context_message)]
     assert updates[-1][0] == 99
     assert updates[-1][1]["status"] == app.OutboundStatus.SENT
+    assert updates[-1][1]["response"]["context"] == [
+        {
+            "recorded": True,
+            "session_id": "session-1",
+            "message_id": 123,
+            "kind": "text",
+        }
+    ]
+    assert steps[0] == {
+        "step": "telegram_context",
+        "status": app.StepStatus.DONE,
+        "email_id": "email-1",
+        "detail": {
+            "recorded": True,
+            "session_id": "session-1",
+            "message_id": 123,
+            "kind": "text",
+        },
+    }
     assert steps[-1]["step"] == "telegram_notify"
+
+
+def test_notify_telegram_uses_rich_send_when_available(monkeypatch, tmp_path):
+    commands = []
+    updates = []
+    steps = []
+    context_calls = []
+    message = "| 字段 | 内容 |\n| --- | --- |\n| From | sender@example.com |"
+    hermes_bin = tmp_path / "hermes"
+    hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    hermes_bin.chmod(0o755)
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        commands.append(args)
+        raise AssertionError("hermes send should not be called after rich send")
+
+    async def fake_send_telegram_rich_text(target, body):
+        assert target == "telegram"
+        assert body == message
+        return telegram_rich.TelegramRichSendResult(
+            sent=True,
+            stdout="telegram rich sent message_id=321\n",
+            message_id="321",
+        )
+
+    def fake_append_notification_to_user_context(target, body):
+        context_calls.append((target, body))
+        return hermes_context.HermesContextAppendResult(
+            recorded=True,
+            session_id="session-1",
+            message_id=321,
+        )
+
+    monkeypatch.setattr(
+        app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+    monkeypatch.setattr(
+        notification_service,
+        "send_telegram_rich_text",
+        fake_send_telegram_rich_text,
+    )
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(app.SETTINGS, notification_target="telegram", hermes_send_bin=hermes_bin),
+    )
+    monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 103)
+    monkeypatch.setattr(
+        app,
+        "update_outbound_message",
+        lambda outbound_id, **kwargs: updates.append((outbound_id, kwargs)),
+    )
+    monkeypatch.setattr(
+        app,
+        "record_processing_step",
+        lambda **kwargs: steps.append(kwargs),
+    )
+    monkeypatch.setattr(
+        notification_service,
+        "append_notification_to_user_context",
+        fake_append_notification_to_user_context,
+    )
+
+    asyncio.run(app.notify_telegram(message, email_id="email-rich"))
+
+    context_message = notification_service.context_message_for_notification(
+        "telegram",
+        "email-rich",
+        message,
+        kind="text",
+    )
+    assert commands == []
+    assert context_calls == [("telegram", context_message)]
+    assert updates[-1][0] == 103
+    assert updates[-1][1]["status"] == app.OutboundStatus.SENT
+    assert updates[-1][1]["stdout"] == "telegram rich sent message_id=321\n"
+    assert steps[0]["step"] == "telegram_context"
+    assert steps[-1]["step"] == "telegram_notify"
+
+
+def test_telegram_rich_payload_is_available_without_hermes_adapter():
+    message = "主人你有一封新邮件~\n\n| 字段 | 内容 |\n| --- | --- |\n| From | sender@example.com |"
+
+    assert telegram_rich._rich_skip_reason(message, {"rich_messages": True}) is None
+    assert telegram_rich._rich_message_payload(message) == {"markdown": message}
+
+
+def test_notification_context_marks_current_conversation_event():
+    message = "邮件处理结果"
+
+    context_message = notification_service.context_message_for_notification(
+        "telegram",
+        "email-1",
+        message,
+        kind="text",
+    )
+
+    assert context_message.startswith("[当前对话邮件通知事件]")
+    assert "属于当前用户聊天上下文" in context_message
+    assert "刚才" in context_message
+    assert "Email ID: email-1" in context_message
+
+
+def test_notify_telegram_does_not_fail_when_context_recording_fails(monkeypatch, tmp_path):
+    commands = []
+    updates = []
+    steps = []
+    message = "邮件处理结果"
+    hermes_bin = tmp_path / "hermes"
+    hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    hermes_bin.chmod(0o755)
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"sent\n", b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        commands.append(args)
+        return FakeProcess()
+
+    async def fake_send_telegram_rich_text(_target, _body):
+        return telegram_rich.TelegramRichSendResult(
+            sent=False,
+            reason="not rich eligible",
+        )
+
+    def fail_context_recording(_target, _body):
+        raise RuntimeError("context db locked")
+
+    monkeypatch.setattr(
+        app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+    monkeypatch.setattr(
+        notification_service,
+        "send_telegram_rich_text",
+        fake_send_telegram_rich_text,
+    )
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(app.SETTINGS, notification_target="telegram", hermes_send_bin=hermes_bin),
+    )
+    monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 100)
+    monkeypatch.setattr(
+        app,
+        "update_outbound_message",
+        lambda outbound_id, **kwargs: updates.append((outbound_id, kwargs)),
+    )
+    monkeypatch.setattr(
+        app,
+        "record_processing_step",
+        lambda **kwargs: steps.append(kwargs),
+    )
+    monkeypatch.setattr(
+        notification_service,
+        "append_notification_to_user_context",
+        fail_context_recording,
+    )
+
+    asyncio.run(app.notify_telegram(message, email_id="email-2"))
+
+    assert commands == [(str(hermes_bin), "send", "--to", "telegram", message)]
+    assert updates[-1][0] == 100
+    assert updates[-1][1]["status"] == app.OutboundStatus.SENT
+    assert steps[0]["step"] == "telegram_context"
+    assert steps[0]["status"] == app.StepStatus.FAILED
+    assert steps[0]["error"] == "context db locked"
+    assert steps[-1]["step"] == "telegram_notify"
+
+
+def test_notify_telegram_records_context_before_media_failure(monkeypatch, tmp_path):
+    commands = []
+    updates = []
+    steps = []
+    context_calls = []
+    message = "邮件处理结果"
+    attachment_path = "/tmp/report.pdf"
+    hermes_bin = tmp_path / "hermes"
+    hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    hermes_bin.chmod(0o755)
+
+    class FakeProcess:
+        def __init__(self, returncode, stdout=b"", stderr=b""):
+            self.returncode = returncode
+            self._stdout = stdout
+            self._stderr = stderr
+
+        async def communicate(self):
+            return self._stdout, self._stderr
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        commands.append(args)
+        if args[-1].startswith("MEDIA:"):
+            return FakeProcess(1, stderr=b"media failed")
+        return FakeProcess(0, stdout=b"sent\n")
+
+    async def fake_send_telegram_rich_text(_target, _body):
+        return telegram_rich.TelegramRichSendResult(
+            sent=False,
+            reason="not rich eligible",
+        )
+
+    def fake_append_notification_to_user_context(target, body):
+        context_calls.append((target, body))
+        return hermes_context.HermesContextAppendResult(
+            recorded=True,
+            session_id="session-1",
+            message_id=124,
+        )
+
+    monkeypatch.setattr(
+        app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+    monkeypatch.setattr(
+        notification_service,
+        "send_telegram_rich_text",
+        fake_send_telegram_rich_text,
+    )
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(app.SETTINGS, notification_target="telegram", hermes_send_bin=hermes_bin),
+    )
+    monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 101)
+    monkeypatch.setattr(
+        app,
+        "update_outbound_message",
+        lambda outbound_id, **kwargs: updates.append((outbound_id, kwargs)),
+    )
+    monkeypatch.setattr(
+        app,
+        "record_processing_step",
+        lambda **kwargs: steps.append(kwargs),
+    )
+    monkeypatch.setattr(
+        notification_service,
+        "append_notification_to_user_context",
+        fake_append_notification_to_user_context,
+    )
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(
+            app.notify_telegram(
+                message,
+                email_id="email-3",
+                attachment_paths=[attachment_path],
+            )
+        )
+
+    assert commands == [
+        (str(hermes_bin), "send", "--to", "telegram", message),
+        (str(hermes_bin), "send", "--to", "telegram", f"MEDIA:{attachment_path}"),
+    ]
+    assert context_calls == [
+        (
+            "telegram",
+            notification_service.context_message_for_notification(
+                "telegram",
+                "email-3",
+                message,
+                kind="text",
+            ),
+        )
+    ]
+    assert steps[0]["step"] == "telegram_context"
+    assert steps[0]["status"] == app.StepStatus.DONE
+    assert updates[-1][0] == 101
+    assert updates[-1][1]["status"] == app.OutboundStatus.FAILED
+    assert steps[-1]["step"] == "telegram_notify"
+    assert steps[-1]["status"] == app.StepStatus.FAILED
+
+
+def test_notify_telegram_records_successful_media_in_context(monkeypatch, tmp_path):
+    commands = []
+    updates = []
+    steps = []
+    context_calls = []
+    message = "邮件处理结果"
+    attachment_path = "/tmp/report.pdf"
+    hermes_bin = tmp_path / "hermes"
+    hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    hermes_bin.chmod(0o755)
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"sent\n", b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        commands.append(args)
+        return FakeProcess()
+
+    async def fake_send_telegram_rich_text(_target, _body):
+        return telegram_rich.TelegramRichSendResult(
+            sent=False,
+            reason="not rich eligible",
+        )
+
+    def fake_append_notification_to_user_context(target, body):
+        context_calls.append((target, body))
+        return hermes_context.HermesContextAppendResult(
+            recorded=True,
+            session_id="session-1",
+            message_id=200 + len(context_calls),
+        )
+
+    monkeypatch.setattr(
+        app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+    monkeypatch.setattr(
+        notification_service,
+        "send_telegram_rich_text",
+        fake_send_telegram_rich_text,
+    )
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(app.SETTINGS, notification_target="telegram", hermes_send_bin=hermes_bin),
+    )
+    monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 102)
+    monkeypatch.setattr(
+        app,
+        "update_outbound_message",
+        lambda outbound_id, **kwargs: updates.append((outbound_id, kwargs)),
+    )
+    monkeypatch.setattr(
+        app,
+        "record_processing_step",
+        lambda **kwargs: steps.append(kwargs),
+    )
+    monkeypatch.setattr(
+        notification_service,
+        "append_notification_to_user_context",
+        fake_append_notification_to_user_context,
+    )
+
+    asyncio.run(
+        app.notify_telegram(
+            message,
+            email_id="email-4",
+            attachment_paths=[attachment_path],
+        )
+    )
+
+    media_message = f"MEDIA:{attachment_path}"
+    assert commands == [
+        (str(hermes_bin), "send", "--to", "telegram", message),
+        (str(hermes_bin), "send", "--to", "telegram", media_message),
+    ]
+    assert context_calls == [
+        (
+            "telegram",
+            notification_service.context_message_for_notification(
+                "telegram",
+                "email-4",
+                message,
+                kind="text",
+            ),
+        ),
+        (
+            "telegram",
+            notification_service.context_message_for_notification(
+                "telegram",
+                "email-4",
+                media_message,
+                kind="media",
+                path=attachment_path,
+            ),
+        ),
+    ]
+    assert updates[-1][0] == 102
+    assert updates[-1][1]["status"] == app.OutboundStatus.SENT
+    assert updates[-1][1]["response"]["context"] == [
+        {
+            "recorded": True,
+            "session_id": "session-1",
+            "message_id": 201,
+            "kind": "text",
+        },
+        {
+            "recorded": True,
+            "session_id": "session-1",
+            "message_id": 202,
+            "kind": "media",
+            "path": attachment_path,
+        },
+    ]
+    assert steps[0]["detail"]["kind"] == "text"
+    assert steps[1]["detail"]["kind"] == "media"
+    assert steps[1]["detail"]["path"] == attachment_path
+    assert steps[-1]["step"] == "telegram_notify"
+
+
+def test_resolve_session_id_for_notification_target(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    sessions_dir = hermes_home / "sessions"
+    sessions_dir.mkdir(parents=True)
+    (sessions_dir / "sessions.json").write_text(
+        json.dumps(
+            {
+                "agent:main:telegram:dm:111": {
+                    "session_id": "old-session",
+                    "platform": "telegram",
+                    "chat_type": "dm",
+                    "updated_at": "2026-01-01T00:00:00",
+                    "origin": {"platform": "telegram", "chat_id": "111", "chat_type": "dm"},
+                },
+                "agent:main:telegram:dm:222": {
+                    "session_id": "new-session",
+                    "platform": "telegram",
+                    "chat_type": "dm",
+                    "updated_at": "2026-01-02T00:00:00",
+                    "origin": {"platform": "telegram", "chat_id": "222", "chat_type": "dm"},
+                },
+                "agent:main:weixin:dm:user": {
+                    "session_id": "weixin-session",
+                    "platform": "weixin",
+                    "chat_type": "dm",
+                    "updated_at": "2026-01-03T00:00:00",
+                    "origin": {"platform": "weixin", "chat_id": "user", "chat_type": "dm"},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(hermes_context.bridge_settings, "hermes_home", lambda: hermes_home)
+
+    assert hermes_context.resolve_session_id_for_target("telegram") == "new-session"
+    assert hermes_context.resolve_session_id_for_target("telegram:111") == "old-session"
+    assert hermes_context.resolve_session_id_for_target("telegram:dm:222") == "new-session"
+    assert hermes_context.resolve_session_id_for_target("signal") is None
 
 
 def test_reply_notice_shows_only_sent_email_without_summary_footer():
@@ -339,11 +961,11 @@ def test_hermes_task_prompt_keeps_bridge_as_delivery_owner():
     assert "通知端（如 Telegram）" in prompt
     assert "不要编造不存在的路径" in prompt
 
-def test_load_settings_uses_bridge_data_dir_env(monkeypatch, tmp_path):
+def test_load_settings_uses_project_data_dir(monkeypatch, tmp_path):
     hermes_bin = tmp_path / "hermes"
     hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
     hermes_bin.chmod(0o755)
-    data_dir = tmp_path / "runtime-data"
+    data_dir = app.bridge_settings.APP_DIR / "data"
 
     monkeypatch.setenv("RESEND_API_KEY", "test")
     monkeypatch.setenv("RESEND_WEBHOOK_SECRET", "test")
@@ -353,7 +975,6 @@ def test_load_settings_uses_bridge_data_dir_env(monkeypatch, tmp_path):
     monkeypatch.setenv(
         "PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}"
     )
-    monkeypatch.setenv("BRIDGE_DATA_DIR", str(data_dir))
 
     settings = app.bridge_settings.load_settings()
 
@@ -628,6 +1249,40 @@ def test_app_rejects_direct_manual_send_without_draft():
     assert "draft_id and approval_token" in exc_info.value.detail
 
 
+def test_app_rejects_confirmed_manual_send_with_unreviewed_headers(monkeypatch, tmp_path):
+    drafts_file = tmp_path / "drafts.json"
+    payload = {
+        "from_local": "mail",
+        "to": ["recipient@example.com"],
+        "subject": "Hello",
+        "text": "Hi",
+    }
+    _write_draft_file(drafts_file, "draft-1", payload)
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(
+            app.SETTINGS,
+            mcp_drafts_file=drafts_file,
+            mcp_drafts_lock_file=tmp_path / "drafts.json.lock",
+        ),
+    )
+
+    with pytest.raises(app.HTTPException) as exc_info:
+        app.normalize_send_payload(
+            {
+                **payload,
+                "headers": {"X-Extra": "not shown in draft"},
+                "confirmed": True,
+                "draft_id": "draft-1",
+                "approval_token": "token",
+            }
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "send payload does not match draft_id" in exc_info.value.detail
+
+
 def _patch_settings_for_send_endpoint(monkeypatch, tmp_path, drafts_file):
     monkeypatch.setattr(
         app,
@@ -676,6 +1331,44 @@ def test_send_endpoint_accepts_manual_send(monkeypatch, tmp_path):
     assert response.status_code == 200
     assert response.json()["resend_id"] == "resend-123"
     assert captured["payload"]["from"] == "mail@example.com"
+
+
+def test_show_draft_endpoint_renders_and_notifies(monkeypatch, tmp_path):
+    drafts_file = tmp_path / "drafts.json"
+    _patch_settings_for_send_endpoint(monkeypatch, tmp_path, drafts_file)
+    captured = {}
+
+    async def fake_notify_telegram(message, *, email_id=None, attachment_paths=None):
+        captured["message"] = message
+        captured["email_id"] = email_id
+        captured["attachment_paths"] = attachment_paths
+
+    monkeypatch.setattr(app, "notify_telegram", fake_notify_telegram)
+
+    payload = {
+        "from_local": "mail",
+        "to": ["recipient@example.com"],
+        "subject": "Hello",
+        "text": "Hi",
+    }
+    with TestClient(app.app) as client:
+        response = client.post(
+            "/show-draft",
+            json={
+                "payload": payload,
+                "draft_id": "draft-1",
+                "title": "请确认是否发送以下邮件：",
+                "footer": "确认后发送。",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert "请确认是否发送以下邮件：" in captured["message"]
+    assert "| 字段 | 内容 |" in captured["message"]
+    assert "Draft ID" in captured["message"]
+    assert "确认后发送。" in captured["message"]
+    assert captured["email_id"] is None
 
 
 def test_init_db_sets_schema_version(monkeypatch, tmp_path):

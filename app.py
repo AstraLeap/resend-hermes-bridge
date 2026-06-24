@@ -11,7 +11,6 @@ from email.utils import parseaddr
 from pathlib import Path
 from typing import Any
 
-import httpx  # noqa: F401
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import ValidationError
 
@@ -109,7 +108,6 @@ def exception_message(exc: Exception) -> str:
 
 
 SETTINGS = bridge_settings.load_settings()
-USER_AGENT = "resend-hermes-bridge/1.0"
 TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".json", ".xml", ".yaml", ".yml", ".log"}
 RELEVANT_EXTENSIONS = {
     ".csv",
@@ -195,6 +193,7 @@ def _draft_payload_subset(raw: dict[str, Any]) -> dict[str, Any]:
         "subject",
         "text",
         "html",
+        "headers",
         "attachments",
     ):
         value = raw.get(key)
@@ -219,14 +218,6 @@ def agent_attachment_roots() -> list[Path]:
     roots = [SETTINGS.attachment_dir]
     roots.extend(GENERATED_ATTACHMENT_ROOTS)
     return [root.expanduser().resolve() for root in roots]
-
-
-def apply_host_cache_permissions(path: Path, *, directory: bool) -> None:
-    resolved = path.expanduser().resolve(strict=False)
-    try:
-        resolved.chmod(0o700 if directory else 0o600)
-    except OSError:
-        LOGGER.warning("could not chmod Hermes cache path %s", resolved)
 
 
 def _require_mcp_draft_confirmation(raw: dict[str, Any]) -> None:

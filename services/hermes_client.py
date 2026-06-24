@@ -6,10 +6,19 @@ import re
 from functools import lru_cache
 from typing import Any
 
-import app as bridge_app
 from db.state import OutboundStatus, StepStatus
 from services.resend_outbound import HermesDecision
 from settings import APP_DIR
+
+
+class _BridgeAppProxy:
+    def __getattr__(self, name: str) -> Any:
+        import app as bridge_app
+
+        return getattr(bridge_app, name)
+
+
+bridge_app = _BridgeAppProxy()
 
 
 @lru_cache(maxsize=8)

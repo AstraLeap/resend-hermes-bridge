@@ -6,7 +6,6 @@ from typing import Any
 
 import httpx
 
-import app as bridge_app
 import services.resend_client as resend_client
 from services.hermes_client import run_hermes_email_task
 from services.resend_outbound import (
@@ -14,7 +13,17 @@ from services.resend_outbound import (
     reply_text_from_decision,
     send_resend_reply,
 )
-from utils.notices import render_inbound_email_notice, render_processing_result_notice
+from utils.email_display import render_inbound_email_notice, render_processing_result_notice
+
+
+class _BridgeAppProxy:
+    def __getattr__(self, name: str) -> Any:
+        import app as bridge_app
+
+        return getattr(bridge_app, name)
+
+
+bridge_app = _BridgeAppProxy()
 
 
 def is_to_inbound_address(email: dict[str, Any], event_data: dict[str, Any]) -> bool:
@@ -79,6 +88,33 @@ def record_fetched_attachment_metadata(
         bridge_app.record_attachment_history(
             email_id=email_id, raw_attachment=attachment, item=item
         )
+
+
+def notification_attachment_paths(downloaded: list[dict[str, Any]]) -> list[str]:
+    paths: list[str] = []
+    for item in downloaded:
+        path = str(item.get("local_path") or "").strip()
+        if path:
+            paths.append(path)
+    return paths
+
+
+async def download_attachments_for_notification(
+    email_id: str,
+    attachments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not attachments:
+        return []
+    try:
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            return await download_relevant_attachments(client, email_id, attachments)
+    except Exception as exc:
+        bridge_app.LOGGER.warning(
+            "could not download attachments for email %s notification: %s",
+            email_id,
+            exc,
+        )
+        return []
 
 
 def _validate_agent_attachment_paths(paths: list[str]) -> list[str]:
@@ -259,7 +295,12 @@ async def notify_non_bot_email(
         title="主人你有一封新邮件~",
         domain=bridge_app.SETTINGS.resend_domain,
     )
-    await bridge_app.notify_telegram(notice, email_id=email_id)
+    downloaded = await download_attachments_for_notification(email_id, attachments)
+    await bridge_app.notify_telegram(
+        notice,
+        email_id=email_id,
+        attachment_paths=notification_attachment_paths(downloaded),
+    )
 
     bridge_app.update_inbound_status(email_id, bridge_app.InboundStatus.NOTIFIED)
 
@@ -272,6 +313,7 @@ async def notify_bot_email_received(
     """Immediately show the original bot-addressed email before processing it."""
 
     title = bridge_app.NOTIFICATION_BOT_TITLE.format(AI_NAME=bridge_app.SETTINGS.ai_name)
+    downloaded = await download_attachments_for_notification(email_id, attachments)
     await bridge_app.notify_telegram(
         render_inbound_email_notice(
             email,
@@ -280,6 +322,7 @@ async def notify_bot_email_received(
             domain=bridge_app.SETTINGS.resend_domain,
         ),
         email_id=email_id,
+        attachment_paths=notification_attachment_paths(downloaded),
     )
     bridge_app.update_inbound_status(email_id, bridge_app.InboundStatus.PROCESSING)
 

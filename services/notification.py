@@ -2,15 +2,112 @@ from __future__ import annotations
 
 import asyncio
 
-import app as bridge_app
 from db.state import OutboundStatus, StepStatus
+from services.hermes_context import append_notification_to_user_context
+from services.telegram_rich import send_telegram_rich_text
+
+
+def _bridge_app():
+    import app as bridge_app
+
+    return bridge_app
+
+
+def context_message_for_notification(
+    target: str,
+    email_id: str | None,
+    message: str,
+    *,
+    kind: str,
+    path: str | None = None,
+) -> str:
+    if kind == "media":
+        lines = [
+            "[当前对话邮件附件事件]",
+            "这是桥接服务刚刚发送到当前聊天界面的邮件附件，属于当前用户聊天上下文。",
+            "后续用户提到“刚才”“最新邮件”“这封邮件”“这个附件”时，优先引用本事件。",
+            "检索关键词: 邮件通知 邮件附件 当前聊天记录 当前会话 用户可见消息",
+            f"目标渠道: {target}",
+        ]
+        if email_id:
+            lines.append(f"Email ID: {email_id}")
+        if path:
+            lines.append(f"附件路径: {path}")
+        lines.extend(["", message])
+        return "\n".join(lines)
+
+    lines = [
+        "[当前对话邮件通知事件]",
+        "这是桥接服务刚刚发送到当前聊天界面的邮件通知，属于当前用户聊天上下文。",
+        "后续用户提到“刚才”“最新邮件”“这封邮件”“邮件通知”“附件”时，优先引用本事件。",
+        "检索关键词: 邮件通知 邮件处理结果 当前聊天记录 当前会话 用户可见消息",
+        f"目标渠道: {target}",
+    ]
+    if email_id:
+        lines.append(f"Email ID: {email_id}")
+    lines.extend(["", message])
+    return "\n".join(lines)
+
+
+def record_notification_context(
+    target: str,
+    email_id: str | None,
+    message: str,
+    *,
+    kind: str,
+    path: str | None = None,
+) -> dict[str, object]:
+    bridge_app = _bridge_app()
+    try:
+        context_message = context_message_for_notification(
+            target,
+            email_id,
+            message,
+            kind=kind,
+            path=path,
+        )
+        context_result = append_notification_to_user_context(target, context_message)
+        context_payload: dict[str, object] = context_result.as_payload()
+        context_payload["kind"] = kind
+        if path is not None:
+            context_payload["path"] = path
+        bridge_app.record_processing_step(
+            step=f"{target}_context",
+            status=StepStatus.DONE if context_result.recorded else StepStatus.IGNORED,
+            email_id=email_id,
+            detail=context_payload,
+        )
+        return context_payload
+    except Exception as exc:
+        context_payload = {"recorded": False, "kind": kind, "error": str(exc)[:1000]}
+        if path is not None:
+            context_payload["path"] = path
+        bridge_app.record_processing_step(
+            step=f"{target}_context",
+            status=StepStatus.FAILED,
+            email_id=email_id,
+            detail=context_payload,
+            error=str(exc)[:1000],
+        )
+        return context_payload
 
 
 async def send_hermes_notification_text(target: str, message: str) -> tuple[str, str]:
+    bridge_app = _bridge_app()
     if not bridge_app.SETTINGS.hermes_send_bin.exists():
         raise RuntimeError(
             f"hermes send binary not found: {bridge_app.SETTINGS.hermes_send_bin}"
         )
+
+    try:
+        rich_result = await send_telegram_rich_text(target, message)
+        if rich_result.sent:
+            return rich_result.stdout, rich_result.stderr
+        if rich_result.reason:
+            bridge_app.LOGGER.info("telegram rich notification skipped: %s", rich_result.reason)
+    except Exception as exc:
+        bridge_app.LOGGER.warning("telegram rich notification fallback: %s", exc)
+
     process = await asyncio.create_subprocess_exec(
         str(bridge_app.SETTINGS.hermes_send_bin),
         "send",
@@ -37,6 +134,7 @@ async def notify_telegram(
     email_id: str | None = None,
     attachment_paths: list[str] | None = None,
 ) -> None:
+    bridge_app = _bridge_app()
     attachment_paths = attachment_paths or []
     target = bridge_app.SETTINGS.notification_target
     payload = {
@@ -52,10 +150,15 @@ async def notify_telegram(
     )
     stdout_text = ""
     stderr_text = ""
+    context_records: list[dict[str, object]] = []
     try:
         stdout, stderr = await send_hermes_notification_text(target, message)
         stdout_text += stdout
         stderr_text += stderr
+
+        context_records.append(
+            record_notification_context(target, email_id, message, kind="text")
+        )
 
         for path in attachment_paths:
             if not path:
@@ -80,10 +183,20 @@ async def notify_telegram(
                     f"failed to send {target} media {path}: "
                     f"stdout={stdout_text} stderr={stderr_text}"
                 )
+            context_records.append(
+                record_notification_context(
+                    target,
+                    email_id,
+                    media_message,
+                    kind="media",
+                    path=path,
+                )
+            )
     except Exception as exc:
         bridge_app.update_outbound_message(
             outbound_id,
             status=OutboundStatus.FAILED,
+            response={"context": context_records} if context_records else None,
             stdout=stdout_text,
             stderr=stderr_text,
             error=str(exc)[:1000],
@@ -101,6 +214,7 @@ async def notify_telegram(
         status=OutboundStatus.SENT,
         stdout=stdout_text,
         stderr=stderr_text,
+        response={"context": context_records} if context_records else None,
     )
     bridge_app.record_processing_step(
         step=f"{target}_notify",

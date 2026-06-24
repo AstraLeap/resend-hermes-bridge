@@ -39,7 +39,7 @@ def hermes_home() -> Path:
 
 
 def bridge_data_dir() -> Path:
-    return Path(os.getenv("BRIDGE_DATA_DIR", str(APP_DIR / "data"))).expanduser()
+    return APP_DIR / "data"
 
 
 def env_bool(name: str, default: str = "false") -> bool:
@@ -114,7 +114,7 @@ def load_settings() -> Settings:
         message = "Bridge configuration is incomplete:\n\n"
         for error in validation_errors:
             message += f"  - {error}\n"
-        message += "\nFix: cp .env.example .env, fill in the values, or run ./scripts/setup.sh"
+        message += "\nFix: cp .env.example .env, fill in the values, or run ./scripts/install.sh"
         raise RuntimeError(message)
     data_dir = bridge_data_dir()
     return Settings(

@@ -150,12 +150,11 @@ def render_attachments_markdown(
     rows: list[list[str]] = []
     for attachment in attachments[:12]:
         filename = attachment_display_name(attachment)
-        content_type = attachment.get("content_type") or "unknown type"
         size = attachment_display_size(attachment)
-        rows.append([filename, str(content_type), size])
+        rows.append([filename, size])
     if len(attachments) > 12:
-        rows.append(["...", f"还有 {len(attachments) - 12} 个附件", ""])
-    lines.extend(render_markdown_table(["文件", "类型", "大小"], rows))
+        rows.append(["...", f"还有 {len(attachments) - 12} 个附件"])
+    lines.extend(render_markdown_table(["文件", "大小"], rows))
     return lines
 
 
@@ -198,6 +197,8 @@ def render_email_markdown(
     footer: str | None = None,
     attachments: list[dict[str, Any]] | None = None,
     body_limit: int | None = None,
+    notice_limit: int | None = None,
+    show_attachments: bool = True,
 ) -> str:
     lines: list[str] = []
     if title:
@@ -224,13 +225,15 @@ def render_email_markdown(
             "```",
         ]
     )
-    display_attachments = attachments
-    if display_attachments is None:
-        display_attachments = payload.get("attachments")
-    lines.extend(render_attachments_markdown(display_attachments))
+    if show_attachments:
+        display_attachments = attachments
+        if display_attachments is None:
+            display_attachments = payload.get("attachments")
+        lines.extend(render_attachments_markdown(display_attachments))
     if footer:
         lines.extend(["", escape_html_autodetect(footer)])
-    return "\n".join(lines)
+    notice = "\n".join(lines)
+    return truncate_notice(notice, notice_limit) if notice_limit is not None else notice
 
 
 def render_draft_markdown(
@@ -240,6 +243,7 @@ def render_draft_markdown(
     title: str,
     domain: str,
     footer: str | None = None,
+    show_attachments: bool = True,
 ) -> str:
     return render_email_markdown(
         draft["payload"],
@@ -247,6 +251,7 @@ def render_draft_markdown(
         domain=domain,
         draft_id=draft_id,
         footer=footer,
+        show_attachments=show_attachments,
     )
 
 
@@ -260,3 +265,74 @@ def inbound_email_payload(email: dict[str, Any]) -> dict[str, Any]:
         "text": email.get("text") or "",
         "html": email.get("html") or "",
     }
+
+
+def render_inbound_email_notice(
+    email: dict[str, Any],
+    attachments: list[dict[str, Any]],
+    *,
+    title: str,
+    domain: str,
+    footer: str | None = None,
+    body_limit: int = 1800,
+    notice_limit: int = 3800,
+    show_attachments: bool = True,
+) -> str:
+    inbound_id = str(email.get("id") or "").strip() or None
+    return render_email_markdown(
+        inbound_email_payload(email),
+        title=title,
+        domain=domain,
+        email_id=inbound_id,
+        footer=footer,
+        attachments=attachments,
+        body_limit=body_limit,
+        notice_limit=notice_limit,
+        show_attachments=show_attachments,
+    )
+
+
+def render_processing_result_notice(
+    summary: str,
+    decision: dict[str, Any] | None = None,
+    *,
+    domain: str,
+    reply_payload: dict[str, Any] | None = None,
+    reply_id: str | None = None,
+    notice_limit: int = 3800,
+    show_attachments: bool = True,
+) -> str:
+    if reply_payload:
+        notice = render_email_markdown(
+            reply_payload,
+            title="Hermes 已自动回复：",
+            domain=domain,
+            email_id=reply_id,
+            notice_limit=notice_limit,
+            show_attachments=show_attachments,
+        )
+        return notice
+
+    return truncate_notice(notice_footer(summary, decision), notice_limit)
+
+
+def notice_footer(
+    summary: str,
+    decision: dict[str, Any] | None = None,
+    *,
+    reply_id: str | None = None,
+) -> str:
+    sections = [
+        "**处理结果**",
+        "",
+        summary,
+    ]
+    if reply_id:
+        sections.extend(["", f"Resend ID: `{reply_id}`"])
+    return "\n".join(sections)
+
+
+def truncate_notice(message: str, limit: int = 3800) -> str:
+    if len(message) <= limit:
+        return message
+    return message[: limit - 16].rstrip() + "\n...[truncated]"

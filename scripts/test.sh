@@ -29,7 +29,7 @@ PY
 
 install_test_env() {
   local python_bin="$1"
-  "$python_bin" -m pip install -r "$ROOT_DIR/requirements.txt" -r "$ROOT_DIR/requirements-dev.txt" >&2
+  "$python_bin" -m pip install -r "$ROOT_DIR/requirements-dev.txt" >&2
   mkdir -p "$(dirname "$REQ_HASH_FILE")"
   printf '%s\n' "$REQ_HASH" > "$REQ_HASH_FILE"
 }

@@ -11,7 +11,6 @@ import httpx
 from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-import app as bridge_app
 import services.resend_client as resend_client
 from db.state import OutboundStatus, StepStatus
 from utils.email_core import (
@@ -19,6 +18,16 @@ from utils.email_core import (
     ensure_list,
     outbound_recipient_summary,
 )
+
+
+class _BridgeAppProxy:
+    def __getattr__(self, name: str) -> Any:
+        import app as bridge_app
+
+        return getattr(bridge_app, name)
+
+
+bridge_app = _BridgeAppProxy()
 
 
 class AttachmentSpec(BaseModel):
@@ -377,7 +386,7 @@ def build_resend_reply_payload(
         headers["References"] = f"{references} {message_id}".strip()
 
     payload = {
-        "from_local": "bot",
+        "from_local": bridge_app.SETTINGS.bot_from_local,
         "to": [sender],
         "subject": subject,
         "text": reply_text_from_decision(decision),
