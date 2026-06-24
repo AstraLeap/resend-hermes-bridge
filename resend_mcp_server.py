@@ -267,9 +267,20 @@ async def send_email(
 ) -> dict[str, Any]:
     """Create an email draft preview, or send a previously user-confirmed draft.
 
-    First call this without confirmed=true so the user can review the draft.
-    Only after the user confirms that exact draft, call again with confirmed=true
-    and the returned draft_id. Manual sends without a prior draft_id are rejected.
+    Use this tool to create a draft and display the standard preview to the user.
+    The tool will render the preview via render_email_markdown; do not generate
+    or display your own preview in the chat.
+
+    Rules:
+    - Only call this tool when the recipient (to), subject, and body (text or
+      html) are clear. If any required information is missing or ambiguous,
+      ask the user for clarification first and do not call this tool.
+    - First call with confirmed=false to create a draft. The preview is shown
+      automatically; do not output any extra text in the chat.
+    - Only after the user confirms, call again with confirmed=true and the
+      returned draft_id. The payload must match the draft exactly.
+    - Manual sends without a prior draft_id are rejected.
+
     Use from_local to choose any valid local part under the configured domain.
     Omit from_local to use the configured owner sender.
     To attach files, pass attachment_paths for local files or attachments as
@@ -323,18 +334,23 @@ async def send_email(
                 title="请确认是否发送以下邮件：",
                 footer=footer,
             )
-            acknowledgment = ""
+            return {
+                "status": "drafted",
+                "draft_id": draft_id,
+                "assistant_response": "",
+                "display": "",
+                "metadata": _redacted_draft(draft_id, draft),
+                "next_step": "Do not send any message. The formatted draft preview is already displayed to the user. Wait for the user to confirm; when they do, call send_email again with confirmed=true and the same draft_id.",
+            }
         except Exception as exc:
-            acknowledgment = f"{confirmation_markdown}\n\n（无法通过桥接发送富文本预览：{exc}）"
-        return {
-            "status": "drafted",
-            "draft_id": draft_id,
-            "assistant_response": acknowledgment,
-            "display": acknowledgment,
-            "confirmation_markdown": confirmation_markdown,
-            "metadata": _redacted_draft(draft_id, draft),
-            "next_step": "The formatted draft preview has been shown to the user. Do not send any additional message. Wait for the user to confirm; when they do, call send_email again with confirmed=true and the same draft_id.",
-        }
+            return {
+                "status": "drafted",
+                "draft_id": draft_id,
+                "assistant_response": f"{confirmation_markdown}\n\n（无法通过桥接发送富文本预览：{exc}）",
+                "display": confirmation_markdown,
+                "metadata": _redacted_draft(draft_id, draft),
+                "next_step": "The draft preview could not be pushed to the chat. Show the assistant_response to the user and wait for confirmation; then call send_email again with confirmed=true and the same draft_id.",
+            }
 
     if not draft_id:
         raise ValueError(
