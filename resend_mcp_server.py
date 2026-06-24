@@ -36,9 +36,6 @@ DRAFTS_FILE = APP_DIR / "data" / "mcp_email_drafts.json"
 DRAFTS_LOCK_FILE = APP_DIR / "data" / "mcp_email_drafts.json.lock"
 DRAFT_TTL_SECONDS = int(os.getenv("RESEND_MCP_DRAFT_TTL_SECONDS", "604800"))
 FROM_DOMAIN = _require_env("RESEND_DOMAIN").lower()
-BOT_FROM_LOCAL = (
-    clean_from_local(_require_env("BOT_FROM_LOCAL")) or ""
-).lower()
 OWNER_FROM_LOCAL = (
     clean_from_local(_require_env("OWNER_FROM_LOCAL")) or ""
 ).lower()
@@ -267,7 +264,6 @@ async def send_email(
     attachment_paths: list[str] | None = None,
     draft_id: str = "",
     confirmed: bool = False,
-    auto_reply_email_id: str = "",
 ) -> dict[str, Any]:
     """Create an email draft preview, or send a previously user-confirmed draft.
 
@@ -275,13 +271,10 @@ async def send_email(
     Only after the user confirms that exact draft, call again with confirmed=true
     and the returned draft_id. Manual sends without a prior draft_id are rejected.
     Use from_local to choose any valid local part under the configured domain.
-    Omit from_local to use the configured owner sender; the bot sender is allowed.
+    Omit from_local to use the configured owner sender.
     To attach files, pass attachment_paths for local files or attachments as
     objects with path, or filename plus base64 content.
     """
-    if auto_reply_email_id.strip():
-        from_local = BOT_FROM_LOCAL
-
     draft_id = str(draft_id or "").strip()
     draft = None
     approval_token = ""
@@ -309,18 +302,6 @@ async def send_email(
             attachment_paths=attachment_paths,
         )
 
-    if auto_reply_email_id.strip():
-        payload["confirmed"] = True
-        payload["auto_reply_email_id"] = auto_reply_email_id.strip()
-        result = await _send_via_bridge(payload)
-        sent_message = _sent_notification(result)
-        return {
-            "status": "sent",
-            "assistant_response": sent_message,
-            "display": sent_message,
-            "bridge_response": result,
-        }
-
     if not confirmed:
         if draft is None:
             draft_id = uuid.uuid4().hex[:12]
@@ -342,14 +323,14 @@ async def send_email(
                 title="请确认是否发送以下邮件：",
                 footer=footer,
             )
-            acknowledgment = f"草稿预览已发送到当前对话，请确认是否发送这封邮件。{footer}"
+            display_text = confirmation_markdown
         except Exception as exc:
-            acknowledgment = f"{confirmation_markdown}\n\n（无法通过桥接发送富文本预览：{exc}）"
+            display_text = f"{confirmation_markdown}\n\n（无法通过桥接发送富文本预览：{exc}）"
         return {
             "status": "drafted",
             "draft_id": draft_id,
-            "assistant_response": acknowledgment,
-            "display": acknowledgment,
+            "assistant_response": display_text,
+            "display": display_text,
             "confirmation_markdown": confirmation_markdown,
             "metadata": _redacted_draft(draft_id, draft),
             "next_step": "Reply to the user with assistant_response verbatim. Do not rewrite the wording or confirmation prompt. Call send_email again with confirmed=true after the user confirms sending this draft.",
