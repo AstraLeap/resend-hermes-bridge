@@ -539,7 +539,7 @@ def test_telegram_rich_payload_is_available_without_hermes_adapter():
     assert telegram_rich._rich_message_payload(message) == {"markdown": message}
 
 
-def test_notification_context_marks_current_conversation_event():
+def test_notification_context_uses_raw_message_text():
     message = "邮件处理结果"
 
     context_message = notification_service.context_message_for_notification(
@@ -549,10 +549,7 @@ def test_notification_context_marks_current_conversation_event():
         kind="text",
     )
 
-    assert context_message.startswith("[当前对话邮件通知事件]")
-    assert "属于当前用户聊天上下文" in context_message
-    assert "刚才" in context_message
-    assert "Email ID: email-1" in context_message
+    assert context_message == message
 
 
 def test_notify_telegram_does_not_fail_when_context_recording_fails(monkeypatch, tmp_path):

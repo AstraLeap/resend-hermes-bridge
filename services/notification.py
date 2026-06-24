@@ -21,32 +21,13 @@ def context_message_for_notification(
     kind: str,
     path: str | None = None,
 ) -> str:
-    if kind == "media":
-        lines = [
-            "[当前对话邮件附件事件]",
-            "这是桥接服务刚刚发送到当前聊天界面的邮件附件，属于当前用户聊天上下文。",
-            "后续用户提到“刚才”“最新邮件”“这封邮件”“这个附件”时，优先引用本事件。",
-            "检索关键词: 邮件通知 邮件附件 当前聊天记录 当前会话 用户可见消息",
-            f"目标渠道: {target}",
-        ]
-        if email_id:
-            lines.append(f"Email ID: {email_id}")
-        if path:
-            lines.append(f"附件路径: {path}")
-        lines.extend(["", message])
-        return "\n".join(lines)
+    """Return the notification text as-is for Hermes context.
 
-    lines = [
-        "[当前对话邮件通知事件]",
-        "这是桥接服务刚刚发送到当前聊天界面的邮件通知，属于当前用户聊天上下文。",
-        "后续用户提到“刚才”“最新邮件”“这封邮件”“邮件通知”“附件”时，优先引用本事件。",
-        "检索关键词: 邮件通知 邮件处理结果 当前聊天记录 当前会话 用户可见消息",
-        f"目标渠道: {target}",
-    ]
-    if email_id:
-        lines.append(f"Email ID: {email_id}")
-    lines.extend(["", message])
-    return "\n".join(lines)
+    The context message should match what the user sees in the chat so the
+    model references the same content when the user mentions "刚才" or
+    "这封邮件".
+    """
+    return message
 
 
 def record_notification_context(
