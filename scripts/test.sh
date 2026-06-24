@@ -55,7 +55,7 @@ else
 fi
 
 if [[ $# -eq 0 ]]; then
-  set -- -q "$ROOT_DIR/tests/test_app.py"
+  set -- -q "$ROOT_DIR/scripts/test_app.py"
 fi
 
 export RESEND_API_KEY=test
