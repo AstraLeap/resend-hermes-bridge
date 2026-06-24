@@ -20,7 +20,6 @@ from db.operations import (  # noqa: F401
     cleanup_old_history,
     create_outbound_message,
     db_health,
-    ensure_schema_version,
     harden_storage_permissions,
     init_db,
     json_dumps,
@@ -100,7 +99,6 @@ logging.basicConfig(
 )
 LOGGER = logging.getLogger("resend-hermes-bridge")
 NOTIFICATION_BOT_TITLE = "{AI_NAME}收到邮件啦！正在处理中哦~"
-SCHEMA_VERSION = 1
 
 
 def exception_message(exc: Exception) -> str:

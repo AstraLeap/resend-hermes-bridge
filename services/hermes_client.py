@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from functools import lru_cache
 from typing import Any
@@ -19,6 +20,12 @@ class _BridgeAppProxy:
 
 
 bridge_app = _BridgeAppProxy()
+
+MAILBOX_MCP_SERVER_NAMES = {"resend_email"}
+MAILBOX_MCP_TOOLSETS = MAILBOX_MCP_SERVER_NAMES | {
+    f"mcp-{name}" for name in MAILBOX_MCP_SERVER_NAMES
+}
+FALLBACK_EMAIL_TASK_TOOLSETS = ["web", "terminal", "file"]
 
 
 async def _communicate_or_kill(
@@ -47,6 +54,35 @@ def _generated_root_text() -> str:
     roots = bridge_app.GENERATED_ATTACHMENT_ROOTS
     root_texts = [str(path) for path in roots]
     return "、".join(root_texts) or "生成文件目录"
+
+
+def _parse_toolsets(value: str) -> list[str]:
+    toolsets: list[str] = []
+    seen: set[str] = set()
+    for item in str(value or "").split(","):
+        toolset = item.strip()
+        if not toolset:
+            continue
+        key = toolset.casefold()
+        if key in {"all", "*"}:
+            continue
+        if key in {name.casefold() for name in MAILBOX_MCP_TOOLSETS}:
+            continue
+        if key not in seen:
+            toolsets.append(toolset)
+            seen.add(key)
+    return toolsets
+
+
+def hermes_email_task_toolsets() -> list[str]:
+    configured = _parse_toolsets(bridge_app.SETTINGS.hermes_email_task_toolsets)
+    return configured or FALLBACK_EMAIL_TASK_TOOLSETS
+
+
+def hermes_email_task_env() -> dict[str, str]:
+    env = os.environ.copy()
+    env["HERMES_SESSION_SOURCE"] = "tool"
+    return env
 
 
 def _build_hermes_task_instruction(prompt_record: dict[str, Any]) -> str:
@@ -234,11 +270,14 @@ async def run_hermes_task(
             "--query",
             prompt_text,
             "--quiet",
+            "--toolsets",
+            ",".join(hermes_email_task_toolsets()),
             "--source",
             "tool",
             "--yolo",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=hermes_email_task_env(),
         )
         stdout, stderr = await _communicate_or_kill(
             process,

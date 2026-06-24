@@ -13,6 +13,44 @@ err() { printf '\033[1;31m%s\033[0m\n' "$*"; }
 
 info "== Resend Hermes Bridge Install =="
 
+HERMES_CANDIDATES=("$HOME/.local/bin/hermes" "$HOME/.hermes/bin/hermes" "/usr/local/bin/hermes")
+HERMES_FOUND=""
+
+# Hermes must be installed and configured before the bridge install can proceed.
+if command -v hermes >/dev/null 2>&1; then
+    HERMES_FOUND="$(command -v hermes)"
+else
+    for candidate in "${HERMES_CANDIDATES[@]}"; do
+        if [[ -x "$candidate" ]]; then
+            HERMES_FOUND="$candidate"
+            break
+        fi
+    done
+fi
+
+if [[ -z "$HERMES_FOUND" ]]; then
+    err "Hermes CLI not found on PATH, ~/.local/bin, ~/.hermes/bin, or /usr/local/bin"
+    err "Install and configure Hermes before installing this bridge"
+    exit 1
+fi
+
+HERMES_CONFIG="$HOME/.hermes/config.yaml"
+if [[ ! -f "$HERMES_CONFIG" ]]; then
+    err "Hermes config not found at $HERMES_CONFIG"
+    err "Run Hermes setup first, then rerun this installer"
+    exit 1
+fi
+
+ok "Hermes CLI found: $HERMES_FOUND"
+ok "Hermes config found: $HERMES_CONFIG"
+
+if ! command -v systemctl >/dev/null 2>&1; then
+    err "systemctl not found"
+    err "This installer requires systemd user services"
+    exit 1
+fi
+ok "systemctl found"
+
 # Python version check
 PYTHON_BIN="${PYTHON_BIN:-python3}"
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
@@ -108,34 +146,9 @@ prompt "OWNER_FROM_LOCAL" "Owner inbox local part (e.g. mail)" "mail"
 prompt "AI_NAME" "Display name for owner notices" "Hermes"
 prompt "NOTIFICATION_TARGET" "Notification platform (telegram/weixin/qqbot/wecom/discord/slack/signal)" "telegram"
 
-# Check Hermes availability
-HERMES_CANDIDATES=("$HOME/.local/bin/hermes" "$HOME/.hermes/bin/hermes" "/usr/local/bin/hermes")
-HERMES_FOUND=""
-
-if command -v hermes >/dev/null 2>&1; then
-    HERMES_FOUND="$(command -v hermes)"
-else
-    for candidate in "${HERMES_CANDIDATES[@]}"; do
-        if [[ -x "$candidate" ]]; then
-            HERMES_FOUND="$candidate"
-            break
-        fi
-    done
-fi
-
-if [[ -n "$HERMES_FOUND" ]]; then
-    ok "Hermes CLI found: $HERMES_FOUND"
-else
-    warn "Hermes CLI not found on PATH, ~/.local/bin, ~/.hermes/bin, or /usr/local/bin"
-    warn "Make sure Hermes is installed before running the bridge"
-fi
-
-# Optional: install bridge systemd user service
-if command -v systemctl >/dev/null 2>&1; then
-    read -rp "Install resend-hermes-bridge systemd user service? [y/N] " install_bridge
-    if [[ "$install_bridge" =~ ^[Yy]$ ]]; then
-        mkdir -p "$HOME/.config/systemd/user"
-        cat > "$HOME/.config/systemd/user/resend-hermes-bridge.service" <<EOF
+info "Installing resend-hermes-bridge systemd user service..."
+mkdir -p "$HOME/.config/systemd/user"
+cat > "$HOME/.config/systemd/user/resend-hermes-bridge.service" <<EOF
 [Unit]
 Description=Resend Hermes Bridge
 After=network-online.target
@@ -153,21 +166,19 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 EOF
-        systemctl --user daemon-reload
-        ok "Installed bridge service. Start with: systemctl --user enable --now resend-hermes-bridge.service"
-    fi
+systemctl --user daemon-reload
+ok "Installed bridge service. Start with: systemctl --user enable --now resend-hermes-bridge.service"
+
+info "Registering MCP server in Hermes config.yaml..."
+if "$VENV_DIR/bin/python" "$ROOT_DIR/scripts/manage.py" install-mcp; then
+    ok "MCP server registered as resend_email"
+else
+    err "MCP install failed"
+    err "Fix Hermes config, then rerun this installer"
+    exit 1
 fi
 
-# Optional: install MCP config into Hermes
-read -rp "Install MCP server config into Hermes config.yaml? [y/N] " install_mcp
-if [[ "$install_mcp" =~ ^[Yy]$ ]]; then
-    HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-    "$VENV_DIR/bin/python" "$ROOT_DIR/manage.py" install-mcp || warn "MCP install failed; you can run it manually later"
-fi
-
-ok "Install complete. Edit $ENV_FILE if needed, then start the bridge."
-info "Run the bridge directly:"
-info "  $VENV_DIR/bin/uvicorn app:app --host 127.0.0.1 --port 8765"
-info ""
-info "Or run as a systemd user service:"
+ok "Install complete. Edit $ENV_FILE if needed."
+info "Start the bridge service:"
 info "  systemctl --user enable --now resend-hermes-bridge.service"
+info "If a Hermes session is already open, run /reload-mcp in that session."

@@ -95,7 +95,9 @@ def init_db() -> None:
                 raw_event_json TEXT,
                 raw_email_json TEXT,
                 raw_attachments_json TEXT,
-                error TEXT
+                error TEXT,
+                deleted_at TEXT,
+                deleted_reason TEXT
             )
             """
         )
@@ -166,7 +168,9 @@ def init_db() -> None:
                 external_id TEXT,
                 stdout TEXT,
                 stderr TEXT,
-                error TEXT
+                error TEXT,
+                deleted_at TEXT,
+                deleted_reason TEXT
             )
             """
         )
@@ -196,22 +200,31 @@ def init_db() -> None:
             ON processing_steps(email_id)
             """
         )
-        ensure_schema_version(conn)
-    harden_storage_permissions()
-
-
-def ensure_schema_version(conn: sqlite3.Connection) -> None:
-    row = conn.execute("PRAGMA user_version").fetchone()
-    current = int(row[0] if row else 0)
-    if current > bridge_app.SCHEMA_VERSION:
-        bridge_app.LOGGER.warning(
-            "database schema version %s is newer than this app version %s",
-            current,
-            bridge_app.SCHEMA_VERSION,
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_labels (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_kind TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(message_kind, message_id, label)
+            )
+            """
         )
-        return
-    if current < bridge_app.SCHEMA_VERSION:
-        conn.execute(f"PRAGMA user_version = {bridge_app.SCHEMA_VERSION}")
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_email_labels_lookup
+            ON email_labels(message_kind, message_id)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_email_labels_label
+            ON email_labels(label)
+            """
+        )
+    harden_storage_permissions()
 
 
 def harden_storage_permissions() -> None:
@@ -253,6 +266,28 @@ def cleanup_old_history() -> None:
                     f"DELETE FROM {table} WHERE {column} < ?", (cutoff,)
                 )
                 deleted[table] = int(cursor.rowcount or 0)
+            deleted["email_labels"] = int(
+                conn.execute(
+                    """
+                    DELETE FROM email_labels
+                    WHERE (
+                        message_kind = 'inbound'
+                        AND NOT EXISTS (
+                            SELECT 1 FROM inbound_emails
+                            WHERE inbound_emails.email_id = email_labels.message_id
+                        )
+                    )
+                    OR (
+                        message_kind = 'outbound'
+                        AND NOT EXISTS (
+                            SELECT 1 FROM outbound_messages
+                            WHERE CAST(outbound_messages.id AS TEXT) = email_labels.message_id
+                        )
+                    )
+                    """
+                ).rowcount
+                or 0
+            )
     except sqlite3.IntegrityError as exc:
         bridge_app.LOGGER.warning("retention cleanup skipped due to related rows: %s", exc)
         return
@@ -309,9 +344,7 @@ def db_health() -> dict[str, Any]:
     try:
         with open_db() as conn:
             conn.execute("SELECT 1").fetchone()
-            row = conn.execute("PRAGMA user_version").fetchone()
-            schema_version = int(row[0] if row else 0)
-        return {"ok": True, "schema_version": schema_version}
+        return {"ok": True}
     except Exception as exc:
         return {"ok": False, "error": bridge_app.exception_message(exc)}
 

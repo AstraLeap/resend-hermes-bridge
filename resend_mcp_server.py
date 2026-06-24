@@ -14,6 +14,7 @@ import httpx
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
+from services import mailbox_store
 from settings import APP_DIR
 from utils.email_core import (
     clean_from_local,
@@ -36,16 +37,29 @@ BRIDGE_URL = os.getenv("RESEND_BRIDGE_URL", "http://127.0.0.1:8765").rstrip("/")
 DRAFTS_FILE = APP_DIR / "data" / "mcp_email_drafts.json"
 DRAFTS_LOCK_FILE = APP_DIR / "data" / "mcp_email_drafts.json.lock"
 DRAFT_TTL_SECONDS = int(os.getenv("RESEND_MCP_DRAFT_TTL_SECONDS", "604800"))
+STATE_DB_FILE = mailbox_store.STATE_DB_FILE
+MCP_SERVER_NAME = "resend_email"
+MCP_DISPLAY_NAME = "resend-email"
+FORBIDDEN_SESSION_SOURCES = {"tool"}
 FROM_DOMAIN = _require_env("RESEND_DOMAIN").lower()
 OWNER_FROM_LOCAL = (
     clean_from_local(_require_env("OWNER_FROM_LOCAL")) or ""
 ).lower()
 
-mcp = FastMCP("resend-email")
+mcp = FastMCP(MCP_DISPLAY_NAME)
 
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _require_user_chat_context() -> None:
+    source = str(os.getenv("HERMES_SESSION_SOURCE") or "").strip().lower()
+    if source in FORBIDDEN_SESSION_SOURCES:
+        raise PermissionError(
+            f"{MCP_SERVER_NAME} MCP is disabled for automated tool sessions; "
+            "use it only from a user chat session"
+        )
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -193,7 +207,7 @@ def _normalize_html_body(value: Any) -> str:
 
 def _format_outbound_payload(
     *,
-    to: list[str],
+    to: list[str] | None,
     subject: str,
     text: str = "",
     html: str = "",
@@ -331,7 +345,7 @@ def _create_draft(payload: dict[str, Any], *, revision_of: str = "") -> tuple[st
 
 def _payload_inputs_present(
     *,
-    to: list[str],
+    to: list[str] | None,
     subject: str,
     text: str,
     html: str,
@@ -441,8 +455,8 @@ def _mark_draft_sent(draft_id: str, result: dict[str, Any]) -> None:
 
 @mcp.tool()
 async def send_email(
-    to: list[str],
-    subject: str,
+    to: list[str] | None = None,
+    subject: str = "",
     text: str = "",
     html: str = "",
     from_local: str = "",
@@ -495,6 +509,7 @@ async def send_email(
     To attach files, pass attachment_paths for local files or attachments as
     objects with path, or filename plus base64 content.
     """
+    _require_user_chat_context()
     draft_id = str(draft_id or "").strip()
     revision_of = str(revision_of or "").strip()
 
@@ -567,6 +582,117 @@ async def send_email(
         "display": _sent_notification(result),
         "bridge_response": result,
     }
+
+
+@mcp.tool()
+async def search_emails(
+    query: str = "",
+    label: str = "",
+    direction: str = "all",
+    status: str = "",
+    limit: int = 20,
+    offset: int = 0,
+    include_deleted: bool = False,
+) -> dict[str, Any]:
+    """Search local email history recorded by the bridge.
+
+    direction accepts all, inbound, or outbound. The returned message_id and
+    kind are the identifiers to pass to view_email, delete_email, and
+    manage_email_labels. Deleted messages are hidden unless include_deleted is
+    true. This tool is for user chat sessions only; automated bot email tasks
+    are not allowed to use it.
+    """
+    _require_user_chat_context()
+    return mailbox_store.search_mailbox(
+        db_path=STATE_DB_FILE,
+        query=query,
+        label=label,
+        direction=direction,
+        status=status,
+        limit=limit,
+        offset=offset,
+        include_deleted=include_deleted,
+    )
+
+
+@mcp.tool()
+async def view_email(
+    message_id: str,
+    kind: str = "inbound",
+    body_limit: int = mailbox_store.DEFAULT_BODY_LIMIT,
+) -> dict[str, Any]:
+    """View one recorded email.
+
+    kind must be inbound or outbound. For inbound mail, message_id is the
+    Resend email_id. For outbound mail, message_id is the numeric local
+    outbound_messages id returned by search_emails.
+    """
+    _require_user_chat_context()
+    return mailbox_store.get_mailbox_email(
+        db_path=STATE_DB_FILE,
+        kind=kind,
+        message_id=message_id,
+        body_limit=body_limit,
+    )
+
+
+@mcp.tool()
+async def delete_email(
+    message_id: str,
+    kind: str = "inbound",
+    reason: str = "",
+    restore: bool = False,
+) -> dict[str, Any]:
+    """Soft-delete or restore a recorded email.
+
+    Deletion hides the message from normal search results but keeps the audit
+    row, attachments, and labels on disk. Pass restore=true to unhide a
+    previously deleted message.
+    """
+    _require_user_chat_context()
+    return mailbox_store.delete_mailbox_email(
+        db_path=STATE_DB_FILE,
+        kind=kind,
+        message_id=message_id,
+        reason=reason,
+        restore=restore,
+    )
+
+
+@mcp.tool()
+async def manage_email_labels(
+    message_id: str,
+    kind: str = "inbound",
+    add_labels: list[str] | None = None,
+    remove_labels: list[str] | None = None,
+    set_labels: list[str] | None = None,
+) -> dict[str, Any]:
+    """Add, remove, or replace labels on a recorded email.
+
+    Use add_labels and remove_labels for incremental edits. Use set_labels to
+    replace all labels at once. Labels are stored locally in the bridge SQLite
+    database.
+    """
+    _require_user_chat_context()
+    return mailbox_store.update_mailbox_labels(
+        db_path=STATE_DB_FILE,
+        kind=kind,
+        message_id=message_id,
+        add_labels=add_labels,
+        remove_labels=remove_labels,
+        set_labels=set_labels,
+    )
+
+
+@mcp.tool()
+async def list_email_labels(query: str = "", limit: int = 100) -> dict[str, Any]:
+    """List labels currently used in local email history."""
+    _require_user_chat_context()
+    return mailbox_store.list_mailbox_labels(
+        db_path=STATE_DB_FILE,
+        query=query,
+        limit=limit,
+    )
 
 
 if __name__ == "__main__":

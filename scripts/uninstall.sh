@@ -73,12 +73,16 @@ path = Path(sys.argv[1])
 text = path.read_text(encoding="utf-8")
 config = yaml.safe_load(text) or {}
 servers = config.get("mcp_servers", {})
-if isinstance(servers, dict) and "resend_email" in servers:
-    del servers["resend_email"]
+removed = []
+if isinstance(servers, dict):
+    if "resend_email" in servers:
+        del servers["resend_email"]
+        removed.append("resend_email")
+if removed:
     if not servers:
         del config["mcp_servers"]
     path.write_text(yaml.safe_dump(config, sort_keys=False, allow_unicode=True), encoding="utf-8")
-    print("Removed resend_email MCP server")
+    print(f"Removed MCP server(s): {', '.join(removed)}")
 else:
     print("resend_email MCP server not found in config")
 PY

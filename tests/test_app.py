@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import os
+import secrets
 import subprocess
 import sys
 import types
@@ -12,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app
-import manage
+from scripts import manage
 
 
 class _DummyFastMCP:
@@ -42,10 +43,25 @@ from svix.webhooks import Webhook  # noqa: E402
 import resend_mcp_server  # noqa: E402
 import services.hermes_context as hermes_context  # noqa: E402
 import services.inbound_email as inbound_email_service  # noqa: E402
+import services.mailbox_store as mailbox_store  # noqa: E402
 import services.notification as notification_service  # noqa: E402
 import services.telegram_rich as telegram_rich  # noqa: E402
 import utils.email_display as notices  # noqa: E402
-from scripts.send_test_webhook import generate_svix_headers  # noqa: E402
+
+
+def generate_svix_headers(secret: str, payload: bytes) -> dict[str, str]:
+    webhook_id = secrets.token_hex(16)
+    timestamp = datetime.now(UTC)
+    signature = Webhook(secret).sign(
+        msg_id=webhook_id,
+        timestamp=timestamp,
+        data=payload.decode(),
+    )
+    return {
+        "svix-id": webhook_id,
+        "svix-timestamp": str(int(timestamp.timestamp())),
+        "svix-signature": signature,
+    }
 
 
 def test_mcp_dependency_is_available_to_runtime_python():
@@ -63,7 +79,7 @@ def test_mcp_dependency_is_available_to_runtime_python():
     assert "ok" in completed.stdout
 
 
-def test_send_test_webhook_generates_valid_svix_signature():
+def test_generate_svix_headers_generates_valid_signature():
     secret = "whsec_" + base64.b64encode(b"test-secret").decode("ascii")
     payload = {"type": "email.received", "data": {"email_id": "email-1"}}
     body = json.dumps(payload).encode()
@@ -1019,10 +1035,12 @@ def test_load_settings_uses_project_data_dir(monkeypatch, tmp_path):
     assert settings.bot_reply_context_ttl_seconds == 600
     assert settings.mcp_draft_ttl_seconds == 604800
     assert settings.generated_attachment_roots == [data_dir / "generated"]
+    assert "web" in settings.hermes_email_task_toolsets
 
 
 def test_hermes_task_runs_direct_subprocess(monkeypatch, tmp_path):
     commands = []
+    subprocess_kwargs = []
     hermes_bin = tmp_path / "hermes"
     hermes_bin.write_text(
         '#!/bin/sh\necho \'{"action":"notify","executed_task":true,"owner_report":"done"}\'',
@@ -1038,6 +1056,7 @@ def test_hermes_task_runs_direct_subprocess(monkeypatch, tmp_path):
 
     async def fake_create_subprocess_exec(*args, **kwargs):
         commands.append(args)
+        subprocess_kwargs.append(kwargs)
         return FakeProcess()
 
     monkeypatch.setattr(app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
@@ -1069,9 +1088,13 @@ def test_hermes_task_runs_direct_subprocess(monkeypatch, tmp_path):
     assert "chat" in commands[0]
     assert "--query" in commands[0]
     assert "--quiet" in commands[0]
+    assert "--toolsets" in commands[0]
+    toolsets_value = commands[0][commands[0].index("--toolsets") + 1]
+    assert "resend_email" not in toolsets_value
     assert "--source" in commands[0]
     assert "tool" in commands[0]
     assert "--yolo" in commands[0]
+    assert subprocess_kwargs[0]["env"]["HERMES_SESSION_SOURCE"] == "tool"
     assert decision["action"] == "notify"
     assert decision["executed_task"] is True
     assert decision["owner_report"] == "done"
@@ -1176,9 +1199,6 @@ def test_mcp_rejects_direct_confirmed_send_without_draft(monkeypatch):
     with pytest.raises(ValueError, match="requires a draft_id"):
         asyncio.run(
             resend_mcp_server.send_email(
-                to=["recipient@example.com"],
-                subject="Hello",
-                text="Hi",
                 confirmed=True,
             )
         )
@@ -1318,8 +1338,6 @@ def test_mcp_confirmed_draft_send_adds_hidden_approval_token(monkeypatch, tmp_pa
 
     sent_result = asyncio.run(
         resend_mcp_server.send_email(
-            to=[],
-            subject="",
             draft_id=draft_result["draft_id"],
             confirmed=True,
         )
@@ -1582,16 +1600,142 @@ def test_show_draft_endpoint_rejects_non_object_json(monkeypatch, tmp_path):
     assert response.json()["detail"] == "JSON object body is required"
 
 
-def test_init_db_sets_schema_version(monkeypatch, tmp_path):
+def test_init_db_creates_current_schema(monkeypatch, tmp_path):
     db_path = tmp_path / "state.db"
     monkeypatch.setattr(app, "SETTINGS", replace(app.SETTINGS, bridge_db=db_path))
 
     app.init_db()
 
     with app.open_db() as conn:
-        row = conn.execute("PRAGMA user_version").fetchone()
+        inbound_columns = {
+            str(item["name"]) for item in conn.execute("PRAGMA table_info(inbound_emails)")
+        }
+        outbound_columns = {
+            str(item["name"]) for item in conn.execute("PRAGMA table_info(outbound_messages)")
+        }
+        label_table = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'email_labels'"
+        ).fetchone()
 
-    assert int(row[0]) == app.SCHEMA_VERSION
+    assert {"deleted_at", "deleted_reason"}.issubset(inbound_columns)
+    assert {"deleted_at", "deleted_reason"}.issubset(outbound_columns)
+    assert label_table is not None
+
+
+def test_mailbox_store_search_labels_and_soft_delete(monkeypatch, tmp_path):
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(
+            app.SETTINGS,
+            bridge_db=db_path,
+            attachment_dir=tmp_path / "attachments",
+        ),
+    )
+    app.init_db()
+    app.record_inbound_email(
+        svix_id="svix-1",
+        event={"type": "email.received", "data": {"email_id": "email-1"}},
+        email={
+            "id": "email-1",
+            "from": "sender@example.com",
+            "to": ["bot@example.com"],
+            "subject": "Quarterly report",
+            "text": "The report is ready.",
+        },
+        attachments=[],
+        addressed_to_inbound=True,
+    )
+
+    result = mailbox_store.search_mailbox(db_path=db_path, query="quarterly")
+    assert result["total"] == 1
+    assert result["items"][0]["message_id"] == "email-1"
+
+    labels = mailbox_store.update_mailbox_labels(
+        db_path=db_path,
+        kind="inbound",
+        message_id="email-1",
+        add_labels=["finance", "todo"],
+    )
+    assert labels["labels"] == ["finance", "todo"]
+    labeled = mailbox_store.search_mailbox(db_path=db_path, label="finance")
+    assert labeled["total"] == 1
+
+    detail = mailbox_store.get_mailbox_email(
+        db_path=db_path,
+        kind="inbound",
+        message_id="email-1",
+    )
+    assert detail["subject"] == "Quarterly report"
+    assert detail["labels"] == ["finance", "todo"]
+
+    deleted = mailbox_store.delete_mailbox_email(
+        db_path=db_path,
+        kind="inbound",
+        message_id="email-1",
+        reason="archived",
+    )
+    assert deleted["deleted"] is True
+    assert mailbox_store.search_mailbox(db_path=db_path, query="quarterly")["total"] == 0
+    assert (
+        mailbox_store.search_mailbox(
+            db_path=db_path,
+            query="quarterly",
+            include_deleted=True,
+        )["total"]
+        == 1
+    )
+
+
+def test_mcp_history_tools_use_mailbox_store(monkeypatch, tmp_path):
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(
+            app.SETTINGS,
+            bridge_db=db_path,
+            attachment_dir=tmp_path / "attachments",
+        ),
+    )
+    monkeypatch.setattr(resend_mcp_server, "STATE_DB_FILE", db_path)
+    monkeypatch.delenv("HERMES_SESSION_SOURCE", raising=False)
+    app.init_db()
+    app.record_inbound_email(
+        svix_id="svix-1",
+        event={"type": "email.received", "data": {"email_id": "email-1"}},
+        email={
+            "id": "email-1",
+            "from": "sender@example.com",
+            "to": ["mail@example.com"],
+            "subject": "Hello MCP",
+            "text": "Searchable body",
+        },
+        attachments=[],
+        addressed_to_inbound=False,
+    )
+
+    labeled = asyncio.run(
+        resend_mcp_server.manage_email_labels(
+            "email-1",
+            kind="inbound",
+            add_labels=["inbox"],
+        )
+    )
+    searched = asyncio.run(resend_mcp_server.search_emails(label="inbox"))
+    viewed = asyncio.run(resend_mcp_server.view_email("email-1", kind="inbound"))
+
+    assert labeled["labels"] == ["inbox"]
+    assert searched["items"][0]["subject"] == "Hello MCP"
+    assert viewed["text_body"] == "Searchable body"
+
+
+def test_mcp_tools_reject_automated_tool_source(monkeypatch):
+    monkeypatch.setenv("HERMES_SESSION_SOURCE", "tool")
+
+    with pytest.raises(PermissionError, match="disabled for automated tool sessions"):
+        asyncio.run(resend_mcp_server.search_emails())
 
 
 def test_manage_cli_status_uses_db_health(monkeypatch, tmp_path, capsys):
@@ -1602,7 +1746,6 @@ def test_manage_cli_status_uses_db_health(monkeypatch, tmp_path, capsys):
 
     output = capsys.readouterr().out
     assert '"ok": true' in output
-    assert f'"schema_version": {app.SCHEMA_VERSION}' in output
 
 
 def test_manage_install_mcp_loads_project_env(monkeypatch, tmp_path, capsys):
@@ -1625,6 +1768,7 @@ def test_manage_install_mcp_loads_project_env(monkeypatch, tmp_path, capsys):
     assert config["mcp_servers"]["resend_email"]["env"]["RESEND_BRIDGE_URL"] == (
         "http://127.0.0.1:9999"
     )
+    assert config["mcp_servers"]["resend_email"]["timeout"] == 120
 
 
 def test_app_accepts_confirmed_manual_send_from_matching_draft(monkeypatch, tmp_path):

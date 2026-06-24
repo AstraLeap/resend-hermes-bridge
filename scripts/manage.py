@@ -9,7 +9,13 @@ from typing import Any
 
 import yaml
 
-import settings as bridge_settings
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+import settings as bridge_settings  # noqa: E402
+
+MAILBOX_MCP_SERVER_NAME = "resend_email"
 
 
 def print_json(value: Any) -> None:
@@ -89,11 +95,11 @@ def command_drafts(_args: argparse.Namespace) -> None:
 
 
 def _repo_dir() -> Path:
-    return Path(__file__).resolve().parent
+    return ROOT_DIR
 
 
 def command_install_mcp(_args: argparse.Namespace) -> None:
-    """Register the Resend MCP server in Hermes config.yaml."""
+    """Register the Hermes mailbox MCP server in Hermes config.yaml."""
     bridge_settings.load_project_env()
     hermes_home = bridge_settings.hermes_home()
     config_path = hermes_home / "config.yaml"
@@ -109,22 +115,24 @@ def command_install_mcp(_args: argparse.Namespace) -> None:
         raise RuntimeError("Hermes config.yaml has an invalid mcp_servers value")
 
     repo_dir = _repo_dir()
-    python_bin = Path(sys.executable).resolve()
+    python_bin = Path(sys.executable).expanduser()
     mcp_server_path = repo_dir / "resend_mcp_server.py"
 
     bridge_url = os.getenv("RESEND_BRIDGE_URL", "http://127.0.0.1:8765").rstrip("/")
 
-    config["mcp_servers"]["resend_email"] = {
+    config["mcp_servers"][MAILBOX_MCP_SERVER_NAME] = {
         "command": str(python_bin),
         "args": [str(mcp_server_path)],
         "env": {"RESEND_BRIDGE_URL": bridge_url},
+        "timeout": 120,
+        "connect_timeout": 30,
     }
 
     config_path.write_text(yaml.safe_dump(config, sort_keys=False, allow_unicode=True), encoding="utf-8")
     print_json({
         "ok": True,
         "config_path": str(config_path),
-        "server": "resend_email",
+        "server": MAILBOX_MCP_SERVER_NAME,
         "command": str(python_bin),
         "args": [str(mcp_server_path)],
         "env": {"RESEND_BRIDGE_URL": bridge_url},
@@ -150,7 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     drafts.set_defaults(func=command_drafts)
 
     install_mcp = subparsers.add_parser(
-        "install-mcp", help="register the Resend MCP server in Hermes config.yaml"
+        "install-mcp", help="register the Hermes mailbox MCP server in Hermes config.yaml"
     )
     install_mcp.set_defaults(func=command_install_mcp)
     return parser

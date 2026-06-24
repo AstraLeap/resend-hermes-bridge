@@ -99,6 +99,7 @@ class Settings:
     bot_reply_context_ttl_seconds: int
     mcp_draft_ttl_seconds: int
     generated_attachment_roots: list[Path]
+    hermes_email_task_toolsets: str
 
     @property
     def inbound_address(self) -> str:
@@ -144,4 +145,11 @@ def load_settings() -> Settings:
         bot_reply_context_ttl_seconds=int(os.getenv("BOT_REPLY_CONTEXT_TTL_SECONDS", "600")),
         mcp_draft_ttl_seconds=int(os.getenv("RESEND_MCP_DRAFT_TTL_SECONDS", "604800")),
         generated_attachment_roots=generated_attachment_roots(),
+        hermes_email_task_toolsets=os.getenv(
+            "HERMES_EMAIL_TASK_TOOLSETS",
+            (
+                "browser,clarify,code_execution,cronjob,delegation,file,"
+                "image_gen,memory,session_search,skills,terminal,vision,web"
+            ),
+        ).strip(),
     )
