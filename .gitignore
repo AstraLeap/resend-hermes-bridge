@@ -24,6 +24,7 @@ data/
 .pytest_cache/
 .ruff_cache/
 
+AGENTS.md
 
 # Runtime MCP draft files (legacy root location)
 mcp_email_drafts.json
