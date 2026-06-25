@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from db.state import OutboundStatus, StepStatus
-from services.hermes_context import append_notification_to_user_context
+from services.hermes_context import append_notification_to_user_context, parse_notification_target
 from services.telegram_rich import send_telegram_rich_text
+from utils.email_display import render_email_markdown
 
 
 def _bridge_app():
@@ -27,6 +29,15 @@ async def _communicate_or_kill(
             pass
         await process.communicate()
         raise
+
+
+def notification_target_supports_markdown_tables(target: str | None = None) -> bool:
+    """All notification targets use the standard Markdown table template."""
+    return True
+
+
+def notification_target_is_telegram(target: str | None) -> bool:
+    return parse_notification_target(str(target or "").strip()).platform.lower() == "telegram"
 
 
 def context_message_for_notification(
@@ -96,14 +107,29 @@ async def send_hermes_notification_text(target: str, message: str) -> tuple[str,
             f"hermes send binary not found: {bridge_app.SETTINGS.hermes_send_bin}"
         )
 
-    try:
-        rich_result = await send_telegram_rich_text(target, message)
-        if rich_result.sent:
-            return rich_result.stdout, rich_result.stderr
-        if rich_result.reason:
-            bridge_app.LOGGER.info("telegram rich notification skipped: %s", rich_result.reason)
-    except Exception as exc:
-        bridge_app.LOGGER.warning("telegram rich notification fallback: %s", exc)
+    if notification_target_is_telegram(target):
+        bridge_app.LOGGER.info(
+            "target %s is telegram; attempting rich send", target
+        )
+        try:
+            rich_result = await send_telegram_rich_text(target, message)
+            if rich_result.sent:
+                bridge_app.LOGGER.info(
+                    "telegram rich send succeeded for %s: %s",
+                    target,
+                    rich_result.stdout.strip(),
+                )
+                return rich_result.stdout, rich_result.stderr
+            if rich_result.reason:
+                bridge_app.LOGGER.info(
+                    "telegram rich notification skipped: %s", rich_result.reason
+                )
+        except Exception as exc:
+            bridge_app.LOGGER.warning("telegram rich notification fallback: %s", exc)
+    else:
+        bridge_app.LOGGER.info(
+            "target %s is not telegram; skipping rich send", target
+        )
 
     process = await asyncio.create_subprocess_exec(
         str(bridge_app.SETTINGS.hermes_send_bin),
@@ -125,17 +151,63 @@ async def send_hermes_notification_text(target: str, message: str) -> tuple[str,
     return stdout_text, stderr_text
 
 
-async def notify_telegram(
+async def send_email_display_notification(
+    payload: dict[str, Any],
+    *,
+    title: str | None,
+    domain: str,
+    draft_id: str | None = None,
+    email_id: str | None = None,
+    footer: str | None = None,
+    attachments: list[dict[str, Any]] | None = None,
+    attachment_paths: list[str] | None = None,
+    target: str | None = None,
+    body_limit: int | None = None,
+    notice_limit: int | None = 3800,
+    show_attachments: bool = True,
+) -> str:
+    """Render one email display with the standard template, then send it."""
+    bridge_app = _bridge_app()
+    notice = render_email_markdown(
+        payload,
+        title=title,
+        domain=domain,
+        draft_id=draft_id,
+        email_id=email_id,
+        footer=footer,
+        attachments=attachments,
+        body_limit=body_limit,
+        notice_limit=notice_limit,
+        show_attachments=show_attachments,
+    )
+    send_kwargs: dict[str, Any] = {
+        "email_id": email_id,
+        "attachment_paths": attachment_paths or [],
+    }
+    if target is not None:
+        send_kwargs["target"] = target
+    await bridge_app.send_notification(notice, **send_kwargs)
+    return notice
+
+
+async def send_notification(
     message: str,
     *,
     email_id: str | None = None,
     attachment_paths: list[str] | None = None,
+    target: str | None = None,
 ) -> None:
     bridge_app = _bridge_app()
     attachment_paths = attachment_paths or []
-    target = bridge_app.SETTINGS.notification_target
+    target = str(target or bridge_app.SETTINGS.notification_target).strip()
     payload = {
-        "command": [str(bridge_app.SETTINGS.hermes_send_bin), "send", "--to", target, message],
+        "command": [
+            str(bridge_app.SETTINGS.hermes_send_bin),
+            "send",
+            "--to",
+            target,
+            message,
+        ],
         "attachment_paths": attachment_paths,
     }
     outbound_id = bridge_app.create_outbound_message(

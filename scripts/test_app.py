@@ -10,9 +10,9 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from fastapi.testclient import TestClient
 
 import app
+import routers.send as send_router
 from scripts import manage
 
 
@@ -62,6 +62,14 @@ def generate_svix_headers(secret: str, payload: bytes) -> dict[str, str]:
         "svix-timestamp": str(int(timestamp.timestamp())),
         "svix-signature": signature,
     }
+
+
+class _JsonRequest:
+    def __init__(self, payload):
+        self.payload = payload
+
+    async def json(self):
+        return self.payload
 
 
 def test_mcp_dependency_is_available_to_runtime_python():
@@ -211,7 +219,7 @@ def test_non_bot_email_notice_uses_owner_title_without_routing_labels(monkeypatc
     def fake_update_status(email_id, status, error=None):
         statuses.append((email_id, status, error))
 
-    monkeypatch.setattr(app, "notify_telegram", fake_notify)
+    monkeypatch.setattr(app, "send_notification", fake_notify)
     monkeypatch.setattr(
         inbound_email_service,
         "download_attachments_for_notification",
@@ -261,7 +269,7 @@ def test_non_bot_email_notice_sends_downloaded_attachment_paths(monkeypatch):
             {"filename": "skipped.txt"},
         ]
 
-    monkeypatch.setattr(app, "notify_telegram", fake_notify)
+    monkeypatch.setattr(app, "send_notification", fake_notify)
     monkeypatch.setattr(
         inbound_email_service,
         "download_attachments_for_notification",
@@ -289,6 +297,50 @@ def test_non_bot_email_notice_sends_downloaded_attachment_paths(monkeypatch):
     assert notifications[0]["attachment_paths"] == ["/tmp/image.jpg"]
 
 
+def test_qqbot_notification_target_uses_markdown_table_template(monkeypatch):
+    messages = []
+
+    async def fake_notify(message, *, email_id=None, attachment_paths=None):
+        messages.append(message)
+
+    async def fake_download_attachments_for_notification(_email_id, _attachments):
+        return []
+
+    monkeypatch.setattr(app, "send_notification", fake_notify)
+    monkeypatch.setattr(
+        inbound_email_service,
+        "download_attachments_for_notification",
+        fake_download_attachments_for_notification,
+    )
+    monkeypatch.setattr(app, "update_inbound_status", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(app, "SETTINGS", replace(app.SETTINGS, notification_target="qqbot"))
+
+    asyncio.run(
+        app.notify_non_bot_email(
+            "email-1",
+            {
+                "id": "email-1",
+                "from": "sender@example.com",
+                "to": ["owner@example.com"],
+                "subject": "Hello",
+                "text": "Body",
+            },
+            [{"filename": "report.pdf", "size": 12}],
+        )
+    )
+
+    assert messages
+    assert "| 字段 | 内容 |" in messages[0]
+    assert "| 文件 | 大小 |" in messages[0]
+    assert "| From | sender@example.com |" in messages[0]
+    assert "| To | owner@example.com |" in messages[0]
+    assert "**邮件信息**" not in messages[0]
+    assert "**正文**" in messages[0]
+    assert "```text" in messages[0]
+    assert "**附件**" in messages[0]
+    assert "| report.pdf | 12 |" in messages[0]
+
+
 def test_bot_email_notice_uses_kabao_title(monkeypatch):
     messages = []
     sent_attachment_paths = []
@@ -304,7 +356,7 @@ def test_bot_email_notice_uses_kabao_title(monkeypatch):
     def fake_update_status(email_id, status, error=None):
         statuses.append((email_id, status, error))
 
-    monkeypatch.setattr(app, "notify_telegram", fake_notify)
+    monkeypatch.setattr(app, "send_notification", fake_notify)
     monkeypatch.setattr(
         inbound_email_service,
         "download_attachments_for_notification",
@@ -343,7 +395,7 @@ def test_bot_email_notice_ignores_custom_title_env(monkeypatch):
         return []
 
     monkeypatch.setenv("NOTIFICATION_BOT_TITLE", "不应该生效")
-    monkeypatch.setattr(app, "notify_telegram", fake_notify)
+    monkeypatch.setattr(app, "send_notification", fake_notify)
     monkeypatch.setattr(
         inbound_email_service,
         "download_attachments_for_notification",
@@ -405,7 +457,7 @@ def test_expired_bot_reply_context_is_rejected_and_removed(monkeypatch, tmp_path
     assert not path.exists()
 
 
-def test_notify_telegram_uses_hermes_send_by_default(monkeypatch, tmp_path):
+def test_send_notification_uses_hermes_send_by_default(monkeypatch, tmp_path):
     commands = []
     updates = []
     steps = []
@@ -470,7 +522,7 @@ def test_notify_telegram_uses_hermes_send_by_default(monkeypatch, tmp_path):
         fake_append_notification_to_user_context,
     )
 
-    asyncio.run(app.notify_telegram(message, email_id="email-1"))
+    asyncio.run(app.send_notification(message, email_id="email-1"))
 
     context_message = notification_service.context_message_for_notification(
         "telegram",
@@ -504,7 +556,7 @@ def test_notify_telegram_uses_hermes_send_by_default(monkeypatch, tmp_path):
     assert steps[-1]["step"] == "telegram_notify"
 
 
-def test_notify_telegram_uses_rich_send_when_available(monkeypatch, tmp_path):
+def test_send_notification_uses_rich_send_for_telegram_when_available(monkeypatch, tmp_path):
     commands = []
     updates = []
     steps = []
@@ -565,7 +617,7 @@ def test_notify_telegram_uses_rich_send_when_available(monkeypatch, tmp_path):
         fake_append_notification_to_user_context,
     )
 
-    asyncio.run(app.notify_telegram(message, email_id="email-rich"))
+    asyncio.run(app.send_notification(message, email_id="email-rich"))
 
     context_message = notification_service.context_message_for_notification(
         "telegram",
@@ -602,7 +654,135 @@ def test_notification_context_uses_raw_message_text():
     assert context_message == message
 
 
-def test_notify_telegram_does_not_fail_when_context_recording_fails(monkeypatch, tmp_path):
+def test_notification_table_supports_all_targets():
+    assert notification_service.notification_target_supports_markdown_tables("telegram")
+    assert notification_service.notification_target_supports_markdown_tables(
+        "telegram:dm:123"
+    )
+    assert notification_service.notification_target_supports_markdown_tables("qqbot")
+    assert notification_service.notification_target_supports_markdown_tables("weixin")
+    assert notification_service.notification_target_supports_markdown_tables("wecom")
+    assert notification_service.notification_target_supports_markdown_tables("discord")
+    assert notification_service.notification_target_supports_markdown_tables("slack")
+    assert notification_service.notification_target_supports_markdown_tables("signal")
+    assert notification_service.notification_target_supports_markdown_tables("unknown")
+
+
+def test_send_email_display_notification_renders_markdown_and_forwards_target(monkeypatch):
+    captured = {}
+
+    async def fake_send_notification(
+        message,
+        *,
+        email_id=None,
+        attachment_paths=None,
+        target=None,
+    ):
+        captured["message"] = message
+        captured["email_id"] = email_id
+        captured["attachment_paths"] = attachment_paths
+        captured["target"] = target
+
+    monkeypatch.setattr(app, "send_notification", fake_send_notification)
+
+    notice = asyncio.run(
+        app.send_email_display_notification(
+            {
+                "from_local": "mail",
+                "to": ["recipient@example.com"],
+                "subject": "Hello",
+                "text": "Hi",
+            },
+            title="请确认是否发送以下邮件：",
+            domain="example.com",
+            draft_id="draft-1",
+            footer="确认后发送。",
+            attachment_paths=["/tmp/report.pdf"],
+            target="qqbot:dm:user-1",
+            show_attachments=False,
+        )
+    )
+
+    assert captured["message"] == notice
+    assert "| 字段 | 内容 |" in notice
+    assert "| Draft ID | draft-1 |" in notice
+    assert "| To | recipient@example.com |" in notice
+    assert "```text" in notice
+    assert "确认后发送。" in notice
+    assert captured["email_id"] is None
+    assert captured["attachment_paths"] == ["/tmp/report.pdf"]
+    assert captured["target"] == "qqbot:dm:user-1"
+
+
+def test_send_notification_skips_telegram_rich_for_non_telegram(monkeypatch, tmp_path):
+    commands = []
+    rich_calls = []
+    updates = []
+    steps = []
+    message = "| 字段 | 内容 |\n| --- | --- |\n| From | sender@example.com |"
+    hermes_bin = tmp_path / "hermes"
+    hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    hermes_bin.chmod(0o755)
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"sent\n", b""
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        commands.append(args)
+        return FakeProcess()
+
+    async def fake_send_telegram_rich_text(target, body):
+        rich_calls.append((target, body))
+        raise AssertionError("telegram rich send should only run for telegram targets")
+
+    def fake_append_notification_to_user_context(target, body):
+        return hermes_context.HermesContextAppendResult(
+            recorded=True,
+            session_id="session-qq",
+            message_id=456,
+        )
+
+    monkeypatch.setattr(app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(
+        notification_service,
+        "send_telegram_rich_text",
+        fake_send_telegram_rich_text,
+    )
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(app.SETTINGS, notification_target="qqbot", hermes_send_bin=hermes_bin),
+    )
+    monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 104)
+    monkeypatch.setattr(
+        app,
+        "update_outbound_message",
+        lambda outbound_id, **kwargs: updates.append((outbound_id, kwargs)),
+    )
+    monkeypatch.setattr(
+        app,
+        "record_processing_step",
+        lambda **kwargs: steps.append(kwargs),
+    )
+    monkeypatch.setattr(
+        notification_service,
+        "append_notification_to_user_context",
+        fake_append_notification_to_user_context,
+    )
+
+    asyncio.run(app.send_notification(message, email_id="email-qq"))
+
+    assert rich_calls == []
+    assert commands == [(str(hermes_bin), "send", "--to", "qqbot", message)]
+    assert updates[-1][0] == 104
+    assert updates[-1][1]["status"] == app.OutboundStatus.SENT
+    assert steps[-1]["step"] == "qqbot_notify"
+
+
+def test_send_notification_does_not_fail_when_context_recording_fails(monkeypatch, tmp_path):
     commands = []
     updates = []
     steps = []
@@ -660,7 +840,7 @@ def test_notify_telegram_does_not_fail_when_context_recording_fails(monkeypatch,
         fail_context_recording,
     )
 
-    asyncio.run(app.notify_telegram(message, email_id="email-2"))
+    asyncio.run(app.send_notification(message, email_id="email-2"))
 
     assert commands == [(str(hermes_bin), "send", "--to", "telegram", message)]
     assert updates[-1][0] == 100
@@ -671,7 +851,7 @@ def test_notify_telegram_does_not_fail_when_context_recording_fails(monkeypatch,
     assert steps[-1]["step"] == "telegram_notify"
 
 
-def test_notify_telegram_records_context_before_media_failure(monkeypatch, tmp_path):
+def test_send_notification_records_context_before_media_failure(monkeypatch, tmp_path):
     commands = []
     updates = []
     steps = []
@@ -743,7 +923,7 @@ def test_notify_telegram_records_context_before_media_failure(monkeypatch, tmp_p
 
     with pytest.raises(RuntimeError):
         asyncio.run(
-            app.notify_telegram(
+            app.send_notification(
                 message,
                 email_id="email-3",
                 attachment_paths=[attachment_path],
@@ -773,7 +953,7 @@ def test_notify_telegram_records_context_before_media_failure(monkeypatch, tmp_p
     assert steps[-1]["status"] == app.StepStatus.FAILED
 
 
-def test_notify_telegram_records_successful_media_in_context(monkeypatch, tmp_path):
+def test_send_notification_records_successful_media_in_context(monkeypatch, tmp_path):
     commands = []
     updates = []
     steps = []
@@ -839,7 +1019,7 @@ def test_notify_telegram_records_successful_media_in_context(monkeypatch, tmp_pa
     )
 
     asyncio.run(
-        app.notify_telegram(
+        app.send_notification(
             message,
             email_id="email-4",
             attachment_paths=[attachment_path],
@@ -1206,24 +1386,12 @@ def test_mcp_rejects_direct_confirmed_send_without_draft(monkeypatch):
     assert calls == []
 
 
-def test_mcp_draft_success_returns_minimal_preview_marker(monkeypatch, tmp_path):
+def test_mcp_draft_returns_verbatim_inline_preview(monkeypatch, tmp_path):
     drafts_file = tmp_path / "drafts.json"
     lock_file = tmp_path / "drafts.json.lock"
-    shown = []
-
-    async def fake_show(payload, *, draft_id, title="", footer=""):
-        shown.append(
-            {
-                "payload": dict(payload),
-                "draft_id": draft_id,
-                "title": title,
-                "footer": footer,
-            }
-        )
 
     monkeypatch.setattr(resend_mcp_server, "DRAFTS_FILE", drafts_file)
     monkeypatch.setattr(resend_mcp_server, "DRAFTS_LOCK_FILE", lock_file)
-    monkeypatch.setattr(resend_mcp_server, "_show_draft_via_bridge", fake_show)
 
     result = asyncio.run(
         resend_mcp_server.send_email(
@@ -1233,34 +1401,26 @@ def test_mcp_draft_success_returns_minimal_preview_marker(monkeypatch, tmp_path)
         )
     )
 
-    assert result == {
-        "status": "drafted",
-        "draft_id": result["draft_id"],
-        "preview_delivered": True,
-    }
-    assert shown[0]["payload"]["to"] == ["recipient@example.com"]
-    assert shown[0]["payload"]["subject"] == "Hello"
-    serialized = json.dumps(result, ensure_ascii=False)
-    assert "assistant_response" not in serialized
-    assert "display" not in serialized
-    assert "metadata" not in serialized
-    assert "next_step" not in serialized
-    assert "recipient@example.com" not in serialized
-    assert "Hello" not in serialized
-    assert "Hi" not in serialized
+    assert result["status"] == "drafted"
+    assert result["preview_delivered"] is False
+    assert "| 字段 | 内容 |" in result["assistant_response"]
+    assert "| To | recipient@example.com |" in result["assistant_response"]
+    assert "| Subject | Hello |" in result["assistant_response"]
+    assert "**邮件信息**" not in result["assistant_response"]
+    assert "Return assistant_response to the user verbatim" in result[
+        "assistant_response_instruction"
+    ]
+    assert result["display"] == result["assistant_response"]
+    assert result["metadata"]["to"] == ["recipient@example.com"]
+    assert result["metadata"]["subject"] == "Hello"
 
 
 def test_mcp_revision_creates_new_draft_and_links_previous(monkeypatch, tmp_path):
     drafts_file = tmp_path / "drafts.json"
     lock_file = tmp_path / "drafts.json.lock"
-    shown = []
-
-    async def fake_show(payload, *, draft_id, title="", footer=""):
-        shown.append({"payload": dict(payload), "draft_id": draft_id})
 
     monkeypatch.setattr(resend_mcp_server, "DRAFTS_FILE", drafts_file)
     monkeypatch.setattr(resend_mcp_server, "DRAFTS_LOCK_FILE", lock_file)
-    monkeypatch.setattr(resend_mcp_server, "_show_draft_via_bridge", fake_show)
 
     first = asyncio.run(
         resend_mcp_server.send_email(
@@ -1279,7 +1439,7 @@ def test_mcp_revision_creates_new_draft_and_links_previous(monkeypatch, tmp_path
     )
 
     assert second["draft_id"] != first["draft_id"]
-    assert shown[-1]["payload"]["subject"] == "Revised"
+    assert "| Subject | Revised |" in second["assistant_response"]
     data = json.loads(drafts_file.read_text(encoding="utf-8"))
     assert data[second["draft_id"]]["revision_of"] == first["draft_id"]
     assert second["draft_id"] in data[first["draft_id"]]["revisions"]
@@ -1289,12 +1449,8 @@ def test_mcp_draft_id_with_new_payload_requires_revision_of(monkeypatch, tmp_pat
     drafts_file = tmp_path / "drafts.json"
     lock_file = tmp_path / "drafts.json.lock"
 
-    async def fake_show(_payload, *, draft_id, title="", footer=""):
-        return None
-
     monkeypatch.setattr(resend_mcp_server, "DRAFTS_FILE", drafts_file)
     monkeypatch.setattr(resend_mcp_server, "DRAFTS_LOCK_FILE", lock_file)
-    monkeypatch.setattr(resend_mcp_server, "_show_draft_via_bridge", fake_show)
 
     first = asyncio.run(
         resend_mcp_server.send_email(
@@ -1464,6 +1620,7 @@ def _patch_settings_for_send_endpoint(monkeypatch, tmp_path, drafts_file):
             attachment_dir=tmp_path / "attachments",
             mcp_drafts_file=drafts_file,
             mcp_drafts_lock_file=tmp_path / "drafts.json.lock",
+            notification_target="telegram",
         ),
     )
 
@@ -1488,19 +1645,20 @@ def test_send_endpoint_accepts_manual_send(monkeypatch, tmp_path):
 
     monkeypatch.setattr(app, "send_resend_email", fake_send_resend_email)
 
-    with TestClient(app.app) as client:
-        response = client.post(
-            "/send",
-            json={
-                **payload,
-                "confirmed": True,
-                "draft_id": "draft-1",
-                "approval_token": "token",
-            },
+    response = asyncio.run(
+        send_router.send_email(
+            _JsonRequest(
+                {
+                    **payload,
+                    "confirmed": True,
+                    "draft_id": "draft-1",
+                    "approval_token": "token",
+                }
+            )
         )
+    )
 
-    assert response.status_code == 200
-    assert response.json()["resend_id"] == "resend-123"
+    assert response["resend_id"] == "resend-123"
     assert captured["payload"]["from"] == "mail@example.com"
 
 
@@ -1528,13 +1686,13 @@ def test_send_endpoint_marks_draft_sent_and_rejects_reuse(monkeypatch, tmp_path)
         "draft_id": "draft-1",
         "approval_token": "token",
     }
-    with TestClient(app.app) as client:
-        first = client.post("/send", json=request_body)
-        second = client.post("/send", json=request_body)
+    first = asyncio.run(send_router.send_email(_JsonRequest(request_body)))
+    with pytest.raises(app.HTTPException) as exc_info:
+        asyncio.run(send_router.send_email(_JsonRequest(request_body)))
 
-    assert first.status_code == 200
-    assert second.status_code == 400
-    assert "already sent" in second.json()["detail"]
+    assert first["ok"] is True
+    assert exc_info.value.status_code == 400
+    assert "already sent" in exc_info.value.detail
     assert len(sent_payloads) == 1
     stored = json.loads(drafts_file.read_text(encoding="utf-8"))["draft-1"]
     assert stored["sent"] is True
@@ -1545,11 +1703,11 @@ def test_send_endpoint_marks_draft_sent_and_rejects_reuse(monkeypatch, tmp_path)
 def test_send_endpoint_rejects_non_object_json(monkeypatch, tmp_path):
     _patch_settings_for_send_endpoint(monkeypatch, tmp_path, tmp_path / "drafts.json")
 
-    with TestClient(app.app) as client:
-        response = client.post("/send", json=[])
+    with pytest.raises(app.HTTPException) as exc_info:
+        asyncio.run(send_router.send_email(_JsonRequest([])))
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "JSON object body is required"
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "JSON object body is required"
 
 
 def test_show_draft_endpoint_renders_and_notifies(monkeypatch, tmp_path):
@@ -1557,12 +1715,19 @@ def test_show_draft_endpoint_renders_and_notifies(monkeypatch, tmp_path):
     _patch_settings_for_send_endpoint(monkeypatch, tmp_path, drafts_file)
     captured = {}
 
-    async def fake_notify_telegram(message, *, email_id=None, attachment_paths=None):
+    async def fake_send_notification(
+        message,
+        *,
+        email_id=None,
+        attachment_paths=None,
+        target=None,
+    ):
         captured["message"] = message
         captured["email_id"] = email_id
         captured["attachment_paths"] = attachment_paths
+        captured["target"] = target
 
-    monkeypatch.setattr(app, "notify_telegram", fake_notify_telegram)
+    monkeypatch.setattr(app, "send_notification", fake_send_notification)
 
     payload = {
         "from_local": "mail",
@@ -1570,34 +1735,83 @@ def test_show_draft_endpoint_renders_and_notifies(monkeypatch, tmp_path):
         "subject": "Hello",
         "text": "Hi",
     }
-    with TestClient(app.app) as client:
-        response = client.post(
-            "/show-draft",
-            json={
-                "payload": payload,
-                "draft_id": "draft-1",
-                "title": "请确认是否发送以下邮件：",
-                "footer": "确认后发送。",
-            },
+    response = asyncio.run(
+        send_router.show_draft(
+            _JsonRequest(
+                {
+                    "payload": payload,
+                    "draft_id": "draft-1",
+                    "title": "请确认是否发送以下邮件：",
+                    "footer": "确认后发送。",
+                }
+            )
         )
+    )
 
-    assert response.status_code == 200
-    assert response.json()["ok"] is True
+    assert response["ok"] is True
     assert "请确认是否发送以下邮件：" in captured["message"]
     assert "| 字段 | 内容 |" in captured["message"]
     assert "Draft ID" in captured["message"]
     assert "确认后发送。" in captured["message"]
     assert captured["email_id"] is None
+    assert captured["target"] is None
+
+
+def test_show_draft_endpoint_uses_markdown_table_template_for_qqbot(monkeypatch, tmp_path):
+    drafts_file = tmp_path / "drafts.json"
+    _patch_settings_for_send_endpoint(monkeypatch, tmp_path, drafts_file)
+    monkeypatch.setattr(app, "SETTINGS", replace(app.SETTINGS, notification_target="qqbot"))
+    captured = {}
+
+    async def fake_send_notification(
+        message,
+        *,
+        email_id=None,
+        attachment_paths=None,
+        target=None,
+    ):
+        captured["message"] = message
+        captured["target"] = target
+
+    monkeypatch.setattr(app, "send_notification", fake_send_notification)
+
+    payload = {
+        "from_local": "mail",
+        "to": ["recipient@example.com"],
+        "subject": "Hello",
+        "text": "Hi",
+    }
+    response = asyncio.run(
+        send_router.show_draft(
+            _JsonRequest(
+                {
+                    "payload": payload,
+                    "draft_id": "draft-1",
+                    "title": "请确认是否发送以下邮件：",
+                    "footer": "确认后发送。",
+                    "target": "qqbot:dm:user-1",
+                }
+            )
+        )
+    )
+
+    assert response["ok"] is True
+    assert "| 字段 | 内容 |" in captured["message"]
+    assert "| Draft ID | draft-1 |" in captured["message"]
+    assert "| To | recipient@example.com |" in captured["message"]
+    assert "**邮件信息**" not in captured["message"]
+    assert "```text" in captured["message"]
+    assert captured["target"] == "qqbot:dm:user-1"
 
 
 def test_show_draft_endpoint_rejects_non_object_json(monkeypatch, tmp_path):
     _patch_settings_for_send_endpoint(monkeypatch, tmp_path, tmp_path / "drafts.json")
 
-    with TestClient(app.app) as client:
-        response = client.post("/show-draft", json=[])
+    with pytest.raises(app.HTTPException) as exc_info:
+        asyncio.run(send_router.show_draft(_JsonRequest([])))
 
-    assert response.status_code == 400
-    assert response.json()["detail"] == "JSON object body is required"
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "JSON object body is required"
 
 
 def test_init_db_creates_current_schema(monkeypatch, tmp_path):
@@ -1870,9 +2084,9 @@ def test_manage_install_mcp_loads_project_env(monkeypatch, tmp_path, capsys):
 
     capsys.readouterr()
     config = manage.yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert config["mcp_servers"]["resend_email"]["env"]["RESEND_BRIDGE_URL"] == (
-        "http://127.0.0.1:9999"
-    )
+    assert config["mcp_servers"]["resend_email"]["env"] == {
+        "RESEND_BRIDGE_URL": "http://127.0.0.1:9999"
+    }
     assert config["mcp_servers"]["resend_email"]["timeout"] == 120
 
 
@@ -2098,10 +2312,16 @@ def test_auto_reply_ignores_removed_forward_received_attachments_field(tmp_path)
     assert "attachments" not in payload
 
 
-def test_auto_reply_materializes_missing_text_attachment(monkeypatch, tmp_path):
+def test_auto_reply_skips_missing_text_attachment(monkeypatch, tmp_path):
     generated_root = tmp_path / "generated"
     attachment = generated_root / "image_description.txt"
     original_generated_roots = app.GENERATED_ATTACHMENT_ROOTS
+    decision = {
+        "action": "reply",
+        "owner_report": "图片内容描述：一张测试图片。",
+        "reply_text": "图片描述已生成，见附件。",
+        "reply_attachments": [str(attachment)],
+    }
     monkeypatch.setattr(app, "GENERATED_ATTACHMENT_ROOTS", [generated_root])
 
     try:
@@ -2112,18 +2332,15 @@ def test_auto_reply_materializes_missing_text_attachment(monkeypatch, tmp_path):
                 "message_id": "<message@example.com>",
                 "headers": {},
             },
-            {
-                "action": "reply",
-                "owner_report": "图片内容描述：一张测试图片。",
-                "reply_text": "图片描述已生成，见附件。",
-                "reply_attachments": [str(attachment)],
-            },
+            decision,
         )
     finally:
         app.GENERATED_ATTACHMENT_ROOTS = original_generated_roots
 
-    assert attachment.read_text(encoding="utf-8") == "图片内容描述：一张测试图片。\n"
-    assert payload["attachments"] == [{"path": str(attachment)}]
+    assert not attachment.exists()
+    assert "attachments" not in payload
+    assert "自动回复时跳过了无效附件" in decision["owner_report"]
+    assert str(attachment) in decision["owner_report"]
 
 
 def test_auto_reply_skips_invalid_generated_attachment(monkeypatch, tmp_path):

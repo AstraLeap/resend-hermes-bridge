@@ -438,22 +438,6 @@ def reply_attachment_specs_from_decision(
         if note not in owner_report:
             decision["owner_report"] = f"{owner_report}\n\n{note}".strip()
 
-    def materialize_missing_text_attachment(path: Path) -> bool:
-        if path.suffix.lower() not in {".txt", ".md"}:
-            return False
-        text = str(decision.get("owner_report") or decision.get("reply_text") or "").strip()
-        if not text:
-            return False
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text + "\n", encoding="utf-8")
-        except OSError as exc:
-            bridge_app.LOGGER.warning(
-                "could not create missing reply attachment %s: %s", path, exc
-            )
-            return False
-        return True
-
     def add_generated_path(
         raw_path: str,
         *,
@@ -471,7 +455,7 @@ def reply_attachment_specs_from_decision(
         ):
             append_skip(raw_path, "outside generated attachment directories")
             return
-        if not path.is_file() and not materialize_missing_text_attachment(path):
+        if not path.is_file():
             append_skip(raw_path, "not found")
             return
         key = str(path)

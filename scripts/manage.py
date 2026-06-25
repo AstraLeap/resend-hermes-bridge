@@ -119,11 +119,12 @@ def command_install_mcp(_args: argparse.Namespace) -> None:
     mcp_server_path = repo_dir / "resend_mcp_server.py"
 
     bridge_url = os.getenv("RESEND_BRIDGE_URL", "http://127.0.0.1:8765").rstrip("/")
+    mcp_env = {"RESEND_BRIDGE_URL": bridge_url}
 
     config["mcp_servers"][MAILBOX_MCP_SERVER_NAME] = {
         "command": str(python_bin),
         "args": [str(mcp_server_path)],
-        "env": {"RESEND_BRIDGE_URL": bridge_url},
+        "env": mcp_env,
         "timeout": 120,
         "connect_timeout": 30,
     }
@@ -135,7 +136,7 @@ def command_install_mcp(_args: argparse.Namespace) -> None:
         "server": MAILBOX_MCP_SERVER_NAME,
         "command": str(python_bin),
         "args": [str(mcp_server_path)],
-        "env": {"RESEND_BRIDGE_URL": bridge_url},
+        "env": mcp_env,
     })
 
 

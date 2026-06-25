@@ -66,7 +66,11 @@ from services.inbound_email import (  # noqa: F401
     read_text_snippet,
     record_fetched_attachment_metadata,
 )
-from services.notification import notify_telegram  # noqa: F401
+from services.notification import (  # noqa: F401
+    notification_target_supports_markdown_tables,
+    send_email_display_notification,
+    send_notification,
+)
 from services.resend_outbound import (  # noqa: F401
     AttachmentSpec,
     HermesDecision,

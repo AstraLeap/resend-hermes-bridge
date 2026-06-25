@@ -13,7 +13,7 @@ from services.resend_outbound import (
     reply_text_from_decision,
     send_resend_reply,
 )
-from utils.email_display import render_inbound_email_notice, render_processing_result_notice
+from utils.email_display import inbound_email_payload
 
 
 class _BridgeAppProxy:
@@ -270,20 +270,19 @@ async def notify_non_bot_email(
     attachments: list[dict[str, Any]],
 ) -> None:
     bridge_app.LOGGER.info(
-        "email %s is not addressed to %s; forwarding to Telegram",
+        "email %s is not addressed to %s; forwarding to %s",
         email_id,
         bridge_app.SETTINGS.inbound_address,
-    )
-    notice = render_inbound_email_notice(
-        email,
-        attachments,
-        title="主人你有一封新邮件~",
-        domain=bridge_app.SETTINGS.resend_domain,
+        bridge_app.SETTINGS.notification_target,
     )
     downloaded = await download_attachments_for_notification(email_id, attachments)
-    await bridge_app.notify_telegram(
-        notice,
+    await bridge_app.send_email_display_notification(
+        inbound_email_payload(email),
+        title="主人你有一封新邮件~",
+        domain=bridge_app.SETTINGS.resend_domain,
         email_id=email_id,
+        attachments=attachments,
+        body_limit=1800,
         attachment_paths=notification_attachment_paths(downloaded),
     )
 
@@ -299,14 +298,13 @@ async def notify_bot_email_received(
 
     title = bridge_app.NOTIFICATION_BOT_TITLE.format(AI_NAME=bridge_app.SETTINGS.ai_name)
     downloaded = await download_attachments_for_notification(email_id, attachments)
-    await bridge_app.notify_telegram(
-        render_inbound_email_notice(
-            email,
-            attachments,
-            title=title,
-            domain=bridge_app.SETTINGS.resend_domain,
-        ),
+    await bridge_app.send_email_display_notification(
+        inbound_email_payload(email),
+        title=title,
+        domain=bridge_app.SETTINGS.resend_domain,
         email_id=email_id,
+        attachments=attachments,
+        body_limit=1800,
         attachment_paths=notification_attachment_paths(downloaded),
     )
     bridge_app.update_inbound_status(email_id, bridge_app.InboundStatus.PROCESSING)
@@ -364,14 +362,12 @@ async def handle_hermes_decision(
             email_id=email_id,
             reply_payload=reply_payload,
         )
-        await bridge_app.notify_telegram(
-            render_processing_result_notice(
-                "Hermes 已通过 Resend 自动回复。",
-                decision=decision,
-                domain=bridge_app.SETTINGS.resend_domain,
-                reply_payload=reply_payload,
-                reply_id=reply_id,
-            ),
+        footer = f"Resend ID: `{reply_id}`" if reply_id else None
+        await bridge_app.send_email_display_notification(
+            reply_payload,
+            title="Hermes 已自动回复：",
+            domain=bridge_app.SETTINGS.resend_domain,
+            footer=footer,
             email_id=email_id,
         )
         bridge_app.update_inbound_status(email_id, bridge_app.InboundStatus.REPLIED)
@@ -383,7 +379,7 @@ async def handle_hermes_decision(
         bridge_app.ensure_list(decision.get("owner_report_attachments") or [])
     )
 
-    await bridge_app.notify_telegram(
+    await bridge_app.send_notification(
         build_activity_summary(decision),
         email_id=email_id,
         attachment_paths=owner_report_attachments,
@@ -442,7 +438,7 @@ async def process_event_safe(event: dict[str, Any], svix_id: str) -> None:
             email_id=email_id or None,
             error=str(exc)[:1000],
         )
-        await bridge_app.notify_telegram(
+        await bridge_app.send_notification(
             "Resend inbound processing failed.\n"
             f"Email ID: {email_id or None}\n"
             f"Error: {exc}",

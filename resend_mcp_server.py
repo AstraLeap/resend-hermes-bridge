@@ -142,7 +142,10 @@ def _redacted_draft(draft_id: str, draft: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _confirmation_markdown(draft_id: str, draft: dict[str, Any]) -> str:
+def _confirmation_markdown(
+    draft_id: str,
+    draft: dict[str, Any],
+) -> str:
     return render_draft_markdown(
         draft_id,
         draft,
@@ -281,30 +284,6 @@ async def _send_via_bridge(payload: dict[str, Any]) -> dict[str, Any]:
     return response_body if isinstance(response_body, dict) else {"data": response_body}
 
 
-async def _show_draft_via_bridge(
-    payload: dict[str, Any],
-    *,
-    draft_id: str,
-    title: str = "请确认是否发送以下邮件：",
-    footer: str = "",
-) -> None:
-    body = {
-        "payload": payload,
-        "draft_id": draft_id,
-        "title": title,
-    }
-    if footer:
-        body["footer"] = footer
-    async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.post(
-            f"{BRIDGE_URL}/show-draft",
-            headers={"Content-Type": "application/json"},
-            json=body,
-        )
-    if response.status_code >= 400:
-        raise RuntimeError(f"Bridge show-draft failed ({response.status_code}): {response.text}")
-
-
 def _load_draft(draft_id: str) -> dict[str, Any] | None:
     draft_id = str(draft_id or "").strip()
     if not draft_id:
@@ -374,50 +353,34 @@ def _payload_inputs_present(
     )
 
 
-def _draft_success_response(draft_id: str) -> dict[str, Any]:
-    return {
-        "status": "drafted",
-        "draft_id": draft_id,
-        "preview_delivered": True,
-    }
-
-
-def _draft_fallback_response(
+def _draft_preview_response(
     *,
     draft_id: str,
     draft: dict[str, Any],
     confirmation_markdown: str,
-    error: Exception,
 ) -> dict[str, Any]:
     return {
         "status": "drafted",
         "draft_id": draft_id,
-        "assistant_response": f"{confirmation_markdown}\n\n（无法通过桥接发送富文本预览：{error}）",
+        "assistant_response": confirmation_markdown,
         "display": confirmation_markdown,
+        "assistant_response_instruction": (
+            "Return assistant_response to the user verbatim as your complete final "
+            "message. Do not add, remove, summarize, translate, reformat, wrap in a "
+            "code block, or change any Markdown."
+        ),
         "metadata": _redacted_draft(draft_id, draft),
         "preview_delivered": False,
     }
 
 
 async def _preview_draft(draft_id: str, draft: dict[str, Any]) -> dict[str, Any]:
-    payload = dict(draft["payload"])
     confirmation_markdown = _confirmation_markdown(draft_id, draft)
-    footer = f"确认后我会发送 Draft ID `{draft_id}`。"
-    try:
-        await _show_draft_via_bridge(
-            payload,
-            draft_id=draft_id,
-            title="请确认是否发送以下邮件：",
-            footer=footer,
-        )
-        return _draft_success_response(draft_id)
-    except Exception as exc:
-        return _draft_fallback_response(
-            draft_id=draft_id,
-            draft=draft,
-            confirmation_markdown=confirmation_markdown,
-            error=exc,
-        )
+    return _draft_preview_response(
+        draft_id=draft_id,
+        draft=draft,
+        confirmation_markdown=confirmation_markdown,
+    )
 
 
 def _load_draft_for_sending(draft_id: str) -> tuple[dict[str, Any], str]:
@@ -473,8 +436,8 @@ async def send_email(
     """Create an email draft preview, or send a previously user-confirmed draft.
 
     When the intended email is clear enough to draft, call this tool with
-    confirmed=false. It creates the draft and displays the standard preview to
-    the user. Do not write, summarize, or display your own preview in chat.
+    confirmed=false. It creates the draft and returns the standard preview in
+    assistant_response.
 
     When the intended email is not clear enough to draft, do not call this tool.
     Ask the user one concise clarification question instead.
@@ -486,12 +449,12 @@ async def send_email(
     - If the recipient, body, sender identity, required attachment, factual
       content, tone/style, or other user preference is missing or ambiguous,
       ask for clarification first and do not call this tool.
-    - First call with confirmed=false to create a draft. The preview is shown
-      automatically; do not output any extra text in the chat.
-    - If this tool returns preview_delivered=true, end your turn silently; the
-      user already has the standard preview and confirmation prompt.
-    - If this tool returns assistant_response, show exactly assistant_response
-      to the user and wait for confirmation.
+    - First call with confirmed=false to create a draft. The tool returns
+      assistant_response containing the complete preview and confirmation prompt.
+    - When this tool returns assistant_response, your final response MUST be
+      exactly assistant_response and nothing else. Do not add a prefix, suffix,
+      summary, explanation, code fence, translation, or Markdown changes. Do not
+      paraphrase any field. Then wait for confirmation.
     - Only after the user confirms, call again with confirmed=true and the
       returned draft_id. The payload must match the draft exactly.
     - If the user asks to modify a previous draft, create a new draft with the

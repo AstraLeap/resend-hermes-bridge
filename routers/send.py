@@ -7,9 +7,17 @@ from fastapi import APIRouter, HTTPException, Request
 
 import app as bridge_app
 from utils.email_core import ensure_list
-from utils.email_display import render_email_markdown
 
 router = APIRouter()
+
+
+def _clean_optional_notification_target(value: Any) -> str | None:
+    target = str(value or "").strip()
+    if not target:
+        return None
+    if "\r" in target or "\n" in target or len(target) > 500:
+        raise HTTPException(status_code=400, detail="target is invalid")
+    return target
 
 
 @router.post("/send")
@@ -65,7 +73,7 @@ async def send_email(request: Request) -> dict[str, Any]:
 
 @router.post("/show-draft")
 async def show_draft(request: Request) -> dict[str, Any]:
-    """Render a draft preview and send it to the owner notification target."""
+    """Render a draft preview and send it to the requested notification target."""
     if not bridge_app.SETTINGS.resend_api_key:
         raise HTTPException(status_code=503, detail="RESEND_API_KEY is not configured")
     try:
@@ -81,8 +89,16 @@ async def show_draft(request: Request) -> dict[str, Any]:
     draft_id = str(raw.get("draft_id") or "").strip() or None
     title = str(raw.get("title") or "请确认是否发送以下邮件：").strip()
     footer = str(raw.get("footer") or "").strip() or None
+    target = _clean_optional_notification_target(raw.get("target"))
 
-    notice = render_email_markdown(
+    bridge_app.LOGGER.info(
+        "show-draft called draft_id=%s target=%s default=%s",
+        draft_id,
+        target,
+        bridge_app.SETTINGS.notification_target,
+    )
+
+    await bridge_app.send_email_display_notification(
         payload,
         title=title,
         domain=bridge_app.SETTINGS.resend_domain,
@@ -90,6 +106,6 @@ async def show_draft(request: Request) -> dict[str, Any]:
         footer=footer,
         show_attachments=False,
         notice_limit=3800,
+        target=target,
     )
-    await bridge_app.notify_telegram(notice, email_id=None, attachment_paths=[])
     return {"ok": True}
