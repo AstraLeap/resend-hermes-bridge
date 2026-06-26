@@ -189,6 +189,10 @@ journalctl --user -u resend-hermes-bridge.service -f
 - Hermes 处理邮件时使用 `--yolo`。邮件正文和附件都是不可信输入，不要在高权限账户或不受控主机上运行。
 - 不要让反向代理把整个 `127.0.0.1:8765` 暴露出去。
 
+## 友情社区
+
+- [linux.do](https://linux.do/)
+
 ## 许可证
 
 MIT
