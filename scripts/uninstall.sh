@@ -48,6 +48,45 @@ prepare_yaml_python() {
     YAML_PYTHON="$TEMP_YAML_ENV/venv/bin/python"
 }
 
+restore_telegram_cjk_rich_guard() {
+    local adapter_file="$HERMES_HOME/hermes-agent/plugins/platforms/telegram/adapter.py"
+    if [[ ! -f "$adapter_file" ]]; then
+        warn "Telegram adapter not found at $adapter_file; skipping CJK rich-message restore"
+        return 0
+    fi
+
+    if python3 - "$adapter_file" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+target = (
+    "            # and not self._has_telegram_desktop_cjk_rich_garble_shape(content)"
+    "  # patched by resend-hermes-bridge install"
+)
+restored = "            and not self._has_telegram_desktop_cjk_rich_garble_shape(content)"
+text = path.read_text(encoding="utf-8")
+if target not in text:
+    print("Telegram CJK rich-message guard is already restored")
+    raise SystemExit(0)
+
+count = text.count(target)
+if count != 2:
+    print(f"Expected 2 patched Telegram CJK rich-message guard lines, found {count}", file=sys.stderr)
+    raise SystemExit(1)
+
+path.write_text(text.replace(target, restored), encoding="utf-8")
+print("Restored Telegram CJK rich-message guard lines: 2")
+PY
+    then
+        ok "Telegram CJK rich-message guard restored"
+    else
+        warn "Could not restore Telegram CJK rich-message guard; please inspect $adapter_file"
+    fi
+}
+
 info "== Resend Hermes Bridge Uninstall =="
 
 # Stop and disable systemd service if present
@@ -116,4 +155,8 @@ if confirm "Remove __pycache__ directories?"; then
     ok "Removed __pycache__ directories"
 fi
 
+info "Restoring Hermes Telegram adapter CJK rich-message guard..."
+restore_telegram_cjk_rich_guard
+
+info "Restart Hermes Gateway for the Telegram adapter restore to take effect."
 ok "Uninstall complete."

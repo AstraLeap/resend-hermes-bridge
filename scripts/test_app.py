@@ -45,7 +45,6 @@ import services.hermes_context as hermes_context  # noqa: E402
 import services.inbound_email as inbound_email_service  # noqa: E402
 import services.mailbox_store as mailbox_store  # noqa: E402
 import services.notification as notification_service  # noqa: E402
-import services.telegram_rich as telegram_rich  # noqa: E402
 import utils.email_display as notices  # noqa: E402
 
 
@@ -336,7 +335,8 @@ def test_qqbot_notification_target_uses_markdown_table_template(monkeypatch):
     assert "| To | owner@example.com |" in messages[0]
     assert "**邮件信息**" not in messages[0]
     assert "**正文**" in messages[0]
-    assert "```text" in messages[0]
+    assert "\nBody\n" in messages[0]
+    assert "```text" not in messages[0]
     assert "**附件**" in messages[0]
     assert "| report.pdf | 12 |" in messages[0]
 
@@ -422,6 +422,77 @@ def test_bot_email_notice_ignores_custom_title_env(monkeypatch):
     assert "不应该生效" not in messages[0]
 
 
+def test_bot_sender_allowlist_is_empty_by_default(monkeypatch):
+    monkeypatch.setattr(app, "SETTINGS", replace(app.SETTINGS, bot_sender_allowlist=""))
+
+    assert app.is_bot_sender_allowed({"from": "sender@example.com"})
+
+
+def test_bot_sender_allowlist_matches_sender_address(monkeypatch):
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(
+            app.SETTINGS,
+            bot_sender_allowlist="trusted@example.com, Alice <alice@example.com>",
+        ),
+    )
+
+    assert app.is_bot_sender_allowed({"from": "Trusted <TRUSTED@example.com>"})
+    assert app.is_bot_sender_allowed({"from": "alice@example.com"})
+    assert not app.is_bot_sender_allowed({"from": "blocked@example.com"})
+
+
+def test_bot_email_from_non_allowlisted_sender_forwards_to_owner(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(app.SETTINGS, bot_sender_allowlist="trusted@example.com"),
+    )
+
+    async def fake_fetch_and_record_inbound(_event, _svix_id, _email_id):
+        return {
+            "id": "email-1",
+            "from": "blocked@example.com",
+            "to": [app.SETTINGS.inbound_address],
+        }, [], True
+
+    async def fake_notify_non_bot(email_id, email, attachments, reason=None):
+        calls.append((email_id, email["from"], attachments, reason))
+
+    async def fail_notify_bot(*_args, **_kwargs):
+        raise AssertionError("bot notification should not run")
+
+    async def fail_decide_bot(*_args, **_kwargs):
+        raise AssertionError("Hermes should not run")
+
+    monkeypatch.setattr(
+        inbound_email_service,
+        "fetch_and_record_inbound",
+        fake_fetch_and_record_inbound,
+    )
+    monkeypatch.setattr(inbound_email_service, "notify_non_bot_email", fake_notify_non_bot)
+    monkeypatch.setattr(inbound_email_service, "notify_bot_email_received", fail_notify_bot)
+    monkeypatch.setattr(inbound_email_service, "decide_bot_email", fail_decide_bot)
+
+    asyncio.run(
+        inbound_email_service.process_event(
+            {"data": {"email_id": "email-1"}},
+            "svix-1",
+        )
+    )
+
+    assert calls == [
+        (
+            "email-1",
+            "blocked@example.com",
+            [],
+            "sender is not in BOT_SENDER_ALLOWLIST",
+        )
+    ]
+
+
 def test_expired_bot_reply_context_is_rejected_and_removed(monkeypatch, tmp_path):
     context_dir = tmp_path / "bot_reply_contexts"
     context_dir.mkdir()
@@ -477,19 +548,8 @@ def test_send_notification_uses_hermes_send_by_default(monkeypatch, tmp_path):
         commands.append(args)
         return FakeProcess()
 
-    async def fake_send_telegram_rich_text(_target, _body):
-        return telegram_rich.TelegramRichSendResult(
-            sent=False,
-            reason="not rich eligible",
-        )
-
     monkeypatch.setattr(
         app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-    monkeypatch.setattr(
-        notification_service,
-        "send_telegram_rich_text",
-        fake_send_telegram_rich_text,
     )
     monkeypatch.setattr(
         app,
@@ -556,91 +616,6 @@ def test_send_notification_uses_hermes_send_by_default(monkeypatch, tmp_path):
     assert steps[-1]["step"] == "telegram_notify"
 
 
-def test_send_notification_uses_rich_send_for_telegram_when_available(monkeypatch, tmp_path):
-    commands = []
-    updates = []
-    steps = []
-    context_calls = []
-    message = "| 字段 | 内容 |\n| --- | --- |\n| From | sender@example.com |"
-    hermes_bin = tmp_path / "hermes"
-    hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
-    hermes_bin.chmod(0o755)
-
-    async def fake_create_subprocess_exec(*args, **kwargs):
-        commands.append(args)
-        raise AssertionError("hermes send should not be called after rich send")
-
-    async def fake_send_telegram_rich_text(target, body):
-        assert target == "telegram"
-        assert body == message
-        return telegram_rich.TelegramRichSendResult(
-            sent=True,
-            stdout="telegram rich sent message_id=321\n",
-            message_id="321",
-        )
-
-    def fake_append_notification_to_user_context(target, body):
-        context_calls.append((target, body))
-        return hermes_context.HermesContextAppendResult(
-            recorded=True,
-            session_id="session-1",
-            message_id=321,
-        )
-
-    monkeypatch.setattr(
-        app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-    monkeypatch.setattr(
-        notification_service,
-        "send_telegram_rich_text",
-        fake_send_telegram_rich_text,
-    )
-    monkeypatch.setattr(
-        app,
-        "SETTINGS",
-        replace(app.SETTINGS, notification_target="telegram", hermes_send_bin=hermes_bin),
-    )
-    monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 103)
-    monkeypatch.setattr(
-        app,
-        "update_outbound_message",
-        lambda outbound_id, **kwargs: updates.append((outbound_id, kwargs)),
-    )
-    monkeypatch.setattr(
-        app,
-        "record_processing_step",
-        lambda **kwargs: steps.append(kwargs),
-    )
-    monkeypatch.setattr(
-        notification_service,
-        "append_notification_to_user_context",
-        fake_append_notification_to_user_context,
-    )
-
-    asyncio.run(app.send_notification(message, email_id="email-rich"))
-
-    context_message = notification_service.context_message_for_notification(
-        "telegram",
-        "email-rich",
-        message,
-        kind="text",
-    )
-    assert commands == []
-    assert context_calls == [("telegram", context_message)]
-    assert updates[-1][0] == 103
-    assert updates[-1][1]["status"] == app.OutboundStatus.SENT
-    assert updates[-1][1]["stdout"] == "telegram rich sent message_id=321\n"
-    assert steps[0]["step"] == "telegram_context"
-    assert steps[-1]["step"] == "telegram_notify"
-
-
-def test_telegram_rich_payload_is_available_without_hermes_adapter():
-    message = "主人你有一封新邮件~\n\n| 字段 | 内容 |\n| --- | --- |\n| From | sender@example.com |"
-
-    assert telegram_rich._rich_skip_reason(message, {"rich_messages": True}) is None
-    assert telegram_rich._rich_message_payload(message) == {"markdown": message}
-
-
 def test_notification_context_uses_raw_message_text():
     message = "邮件处理结果"
 
@@ -666,6 +641,63 @@ def test_notification_table_supports_all_targets():
     assert notification_service.notification_target_supports_markdown_tables("slack")
     assert notification_service.notification_target_supports_markdown_tables("signal")
     assert notification_service.notification_target_supports_markdown_tables("unknown")
+
+
+def test_email_notice_decodes_html_entities_in_text_body():
+    notice = notices.render_email_markdown(
+        {
+            "from": "Alice <alice@example.com>",
+            "to": ["bot@example.com"],
+            "subject": "A &gt; B",
+            "text": "A &gt; B\nC &lt; D",
+        },
+        title=None,
+        domain="example.com",
+    )
+
+    assert "A > B\nC < D" in notice
+    assert "A &gt; B\nC &lt; D" not in notice
+    assert "| Subject | A > B |" in notice
+
+
+def test_email_notice_decodes_html_entities_in_html_body():
+    notice = notices.render_email_markdown(
+        {
+            "from": "Alice <alice@example.com>",
+            "to": ["bot@example.com"],
+            "subject": "Hello",
+            "html": "<p>A &gt; B</p><p>C &lt; D</p>",
+        },
+        title=None,
+        domain="example.com",
+    )
+
+    assert "A > B\nC < D" in notice
+
+
+def test_email_notice_renders_body_as_wrapping_markdown_text():
+    long_line = "hello " * 80
+    notice = notices.render_email_markdown(
+        {
+            "from": "Alice <alice@example.com>",
+            "to": ["bot@example.com"],
+            "subject": "Hello",
+            "text": long_line,
+        },
+        title=None,
+        domain="example.com",
+    )
+
+    assert long_line.strip() in notice
+    assert "```text" not in notice
+
+
+def test_email_summary_decodes_html_entities_for_hermes():
+    text_summary = app.email_summary({"text": "A &gt; B and C &lt; D"})
+    html_summary = app.email_summary({"html": "<p>A &gt; B</p><p>C &lt; D</p>"})
+
+    assert text_summary["text_preview"] == "A > B and C < D"
+    assert html_summary["html_preview"] == "A > B\nC < D"
 
 
 def test_send_email_display_notification_renders_markdown_and_forwards_target(monkeypatch):
@@ -707,16 +739,16 @@ def test_send_email_display_notification_renders_markdown_and_forwards_target(mo
     assert "| 字段 | 内容 |" in notice
     assert "| Draft ID | draft-1 |" in notice
     assert "| To | recipient@example.com |" in notice
-    assert "```text" in notice
+    assert "\nHi\n" in notice
+    assert "```text" not in notice
     assert "确认后发送。" in notice
     assert captured["email_id"] is None
     assert captured["attachment_paths"] == ["/tmp/report.pdf"]
     assert captured["target"] == "qqbot:dm:user-1"
 
 
-def test_send_notification_skips_telegram_rich_for_non_telegram(monkeypatch, tmp_path):
+def test_send_notification_uses_hermes_send_for_non_telegram(monkeypatch, tmp_path):
     commands = []
-    rich_calls = []
     updates = []
     steps = []
     message = "| 字段 | 内容 |\n| --- | --- |\n| From | sender@example.com |"
@@ -734,10 +766,6 @@ def test_send_notification_skips_telegram_rich_for_non_telegram(monkeypatch, tmp
         commands.append(args)
         return FakeProcess()
 
-    async def fake_send_telegram_rich_text(target, body):
-        rich_calls.append((target, body))
-        raise AssertionError("telegram rich send should only run for telegram targets")
-
     def fake_append_notification_to_user_context(target, body):
         return hermes_context.HermesContextAppendResult(
             recorded=True,
@@ -746,11 +774,6 @@ def test_send_notification_skips_telegram_rich_for_non_telegram(monkeypatch, tmp
         )
 
     monkeypatch.setattr(app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-    monkeypatch.setattr(
-        notification_service,
-        "send_telegram_rich_text",
-        fake_send_telegram_rich_text,
-    )
     monkeypatch.setattr(
         app,
         "SETTINGS",
@@ -775,7 +798,6 @@ def test_send_notification_skips_telegram_rich_for_non_telegram(monkeypatch, tmp
 
     asyncio.run(app.send_notification(message, email_id="email-qq"))
 
-    assert rich_calls == []
     assert commands == [(str(hermes_bin), "send", "--to", "qqbot", message)]
     assert updates[-1][0] == 104
     assert updates[-1][1]["status"] == app.OutboundStatus.SENT
@@ -801,22 +823,11 @@ def test_send_notification_does_not_fail_when_context_recording_fails(monkeypatc
         commands.append(args)
         return FakeProcess()
 
-    async def fake_send_telegram_rich_text(_target, _body):
-        return telegram_rich.TelegramRichSendResult(
-            sent=False,
-            reason="not rich eligible",
-        )
-
     def fail_context_recording(_target, _body):
         raise RuntimeError("context db locked")
 
     monkeypatch.setattr(
         app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-    monkeypatch.setattr(
-        notification_service,
-        "send_telegram_rich_text",
-        fake_send_telegram_rich_text,
     )
     monkeypatch.setattr(
         app,
@@ -877,12 +888,6 @@ def test_send_notification_records_context_before_media_failure(monkeypatch, tmp
             return FakeProcess(1, stderr=b"media failed")
         return FakeProcess(0, stdout=b"sent\n")
 
-    async def fake_send_telegram_rich_text(_target, _body):
-        return telegram_rich.TelegramRichSendResult(
-            sent=False,
-            reason="not rich eligible",
-        )
-
     def fake_append_notification_to_user_context(target, body):
         context_calls.append((target, body))
         return hermes_context.HermesContextAppendResult(
@@ -893,11 +898,6 @@ def test_send_notification_records_context_before_media_failure(monkeypatch, tmp
 
     monkeypatch.setattr(
         app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-    monkeypatch.setattr(
-        notification_service,
-        "send_telegram_rich_text",
-        fake_send_telegram_rich_text,
     )
     monkeypatch.setattr(
         app,
@@ -974,12 +974,6 @@ def test_send_notification_records_successful_media_in_context(monkeypatch, tmp_
         commands.append(args)
         return FakeProcess()
 
-    async def fake_send_telegram_rich_text(_target, _body):
-        return telegram_rich.TelegramRichSendResult(
-            sent=False,
-            reason="not rich eligible",
-        )
-
     def fake_append_notification_to_user_context(target, body):
         context_calls.append((target, body))
         return hermes_context.HermesContextAppendResult(
@@ -990,11 +984,6 @@ def test_send_notification_records_successful_media_in_context(monkeypatch, tmp_
 
     monkeypatch.setattr(
         app.asyncio, "create_subprocess_exec", fake_create_subprocess_exec
-    )
-    monkeypatch.setattr(
-        notification_service,
-        "send_telegram_rich_text",
-        fake_send_telegram_rich_text,
     )
     monkeypatch.setattr(
         app,
@@ -1216,6 +1205,7 @@ def test_load_settings_uses_project_data_dir(monkeypatch, tmp_path):
     assert settings.mcp_draft_ttl_seconds == 604800
     assert settings.generated_attachment_roots == [data_dir / "generated"]
     assert "web" in settings.hermes_email_task_toolsets
+    assert settings.bot_sender_allowlist == ""
 
 
 def test_hermes_task_runs_direct_subprocess(monkeypatch, tmp_path):
@@ -1800,7 +1790,8 @@ def test_show_draft_endpoint_uses_markdown_table_template_for_qqbot(monkeypatch,
     assert "| Draft ID | draft-1 |" in captured["message"]
     assert "| To | recipient@example.com |" in captured["message"]
     assert "**邮件信息**" not in captured["message"]
-    assert "```text" in captured["message"]
+    assert "\nHi\n" in captured["message"]
+    assert "```text" not in captured["message"]
     assert captured["target"] == "qqbot:dm:user-1"
 
 
@@ -2073,10 +2064,10 @@ def test_manage_install_mcp_loads_project_env(monkeypatch, tmp_path, capsys):
     config_path = hermes_home / "config.yaml"
     config_path.write_text("{}\n", encoding="utf-8")
     monkeypatch.setattr(manage.bridge_settings, "hermes_home", lambda: hermes_home)
-    monkeypatch.delenv("RESEND_BRIDGE_URL", raising=False)
+    monkeypatch.delenv("RESEND_BRIDGE_PORT", raising=False)
 
     def fake_load_project_env():
-        monkeypatch.setenv("RESEND_BRIDGE_URL", "http://127.0.0.1:9999/")
+        monkeypatch.setenv("RESEND_BRIDGE_PORT", "9999")
 
     monkeypatch.setattr(manage.bridge_settings, "load_project_env", fake_load_project_env)
 
@@ -2085,7 +2076,7 @@ def test_manage_install_mcp_loads_project_env(monkeypatch, tmp_path, capsys):
     capsys.readouterr()
     config = manage.yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert config["mcp_servers"]["resend_email"]["env"] == {
-        "RESEND_BRIDGE_URL": "http://127.0.0.1:9999"
+        "RESEND_BRIDGE_PORT": "9999"
     }
     assert config["mcp_servers"]["resend_email"]["timeout"] == 120
 

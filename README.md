@@ -81,6 +81,9 @@ location /your-resend-endpoint {
 }
 ```
 
+如果在 `.env` 里把 `RESEND_BRIDGE_PORT` 改成了其他端口，Nginx 示例里的 `8765`
+也要同步替换。
+
 不要把 `/send`、`/show-draft`、`/health` 整个服务直接暴露到公网。
 
 ## 快速安装
@@ -98,6 +101,8 @@ cd resend-hermes-bridge
 - 检查 Python 版本，要求 Python 3.11 或更高版本。
 - 创建 `.venv` 并安装运行依赖。
 - 从 `.env.example` 创建 `.env`，并交互式填写常用配置。
+- 交互式设置本地监听端口，写入 `RESEND_BRIDGE_PORT`；不填默认 `8765`。
+- 可选设置 `BOT_SENDER_ALLOWLIST` 发件人白名单；不填时所有发件人都允许触发 bot。
 - 安装 systemd 用户服务并启动。
 - 把 MCP server 注册到 Hermes `config.yaml`。
 
@@ -107,6 +112,15 @@ cd resend-hermes-bridge
 systemctl --user status resend-hermes-bridge.service
 curl http://127.0.0.1:8765/health
 ```
+
+如果使用了自定义端口，把上面的 `8765` 换成 `.env` 中的 `RESEND_BRIDGE_PORT`。
+
+自动处理规则：
+
+- 邮件发给 `BOT_FROM_LOCAL@RESEND_DOMAIN` 且发件人在 `BOT_SENDER_ALLOWLIST` 内时，才交给 Hermes bot 自动处理。
+- `BOT_SENDER_ALLOWLIST` 为空时表示不限制发件人。
+- 白名单用英文逗号分隔，例如 `alice@example.com,bob@example.com`。
+- 不满足自动处理规则的邮件只通知给主人，不会交给 bot 执行。
 
 如果 Hermes 会话已经打开，执行 `/reload-mcp` 重新加载 MCP 工具。
 

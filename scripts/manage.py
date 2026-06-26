@@ -118,8 +118,8 @@ def command_install_mcp(_args: argparse.Namespace) -> None:
     python_bin = Path(sys.executable).expanduser()
     mcp_server_path = repo_dir / "resend_mcp_server.py"
 
-    bridge_url = os.getenv("RESEND_BRIDGE_URL", "http://127.0.0.1:8765").rstrip("/")
-    mcp_env = {"RESEND_BRIDGE_URL": bridge_url}
+    bridge_port = os.getenv("RESEND_BRIDGE_PORT", "8765").strip() or "8765"
+    mcp_env = {"RESEND_BRIDGE_PORT": bridge_port}
 
     config["mcp_servers"][MAILBOX_MCP_SERVER_NAME] = {
         "command": str(python_bin),

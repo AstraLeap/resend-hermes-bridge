@@ -57,6 +57,7 @@ from services.inbound_email import (  # noqa: F401
     email_summary,
     fetch_and_record_inbound,
     handle_hermes_decision,
+    is_bot_sender_allowed,
     is_relevant_attachment,
     is_to_inbound_address,
     notify_bot_email_received,

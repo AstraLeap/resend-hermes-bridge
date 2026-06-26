@@ -33,7 +33,8 @@ def _require_env(name: str) -> str:
 
 load_dotenv(APP_DIR / ".env")
 
-BRIDGE_URL = os.getenv("RESEND_BRIDGE_URL", "http://127.0.0.1:8765").rstrip("/")
+BRIDGE_PORT = os.getenv("RESEND_BRIDGE_PORT", "8765").strip() or "8765"
+BRIDGE_URL = f"http://127.0.0.1:{BRIDGE_PORT}"
 DRAFTS_FILE = APP_DIR / "data" / "mcp_email_drafts.json"
 DRAFTS_LOCK_FILE = APP_DIR / "data" / "mcp_email_drafts.json.lock"
 DRAFT_TTL_SECONDS = int(os.getenv("RESEND_MCP_DRAFT_TTL_SECONDS", "604800"))

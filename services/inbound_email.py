@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from email.utils import parseaddr
+from html import unescape
 from pathlib import Path
 from typing import Any
 
@@ -13,7 +14,7 @@ from services.resend_outbound import (
     reply_text_from_decision,
     send_resend_reply,
 )
-from utils.email_display import inbound_email_payload
+from utils.email_display import html_to_display_text, inbound_email_payload
 
 
 class _BridgeAppProxy:
@@ -37,6 +38,23 @@ def is_to_inbound_address(email: dict[str, Any], event_data: dict[str, Any]) -> 
                 recipients.append(str(value))
     parsed = {parseaddr(item)[1].lower() or item.lower() for item in recipients}
     return bridge_app.SETTINGS.inbound_address in parsed
+
+
+def _normalized_sender(value: Any) -> str:
+    raw = str(value or "").strip()
+    return (parseaddr(raw)[1] or raw).lower()
+
+
+def is_bot_sender_allowed(email: dict[str, Any]) -> bool:
+    configured = str(bridge_app.SETTINGS.bot_sender_allowlist or "").strip()
+    if not configured:
+        return True
+    allowed = {
+        _normalized_sender(item)
+        for item in configured.split(",")
+        if str(item or "").strip()
+    }
+    return _normalized_sender(email.get("from")) in allowed
 
 
 def is_relevant_attachment(attachment: dict[str, Any]) -> bool:
@@ -268,12 +286,13 @@ async def notify_non_bot_email(
     email_id: str,
     email: dict[str, Any],
     attachments: list[dict[str, Any]],
+    reason: str | None = None,
 ) -> None:
     bridge_app.LOGGER.info(
-        "email %s is not addressed to %s; forwarding to %s",
+        "email %s forwarded to %s: %s",
         email_id,
-        bridge_app.SETTINGS.inbound_address,
         bridge_app.SETTINGS.notification_target,
+        reason or f"not addressed to {bridge_app.SETTINGS.inbound_address}",
     )
     downloaded = await download_attachments_for_notification(email_id, attachments)
     await bridge_app.send_email_display_notification(
@@ -397,7 +416,21 @@ async def process_event(event: dict[str, Any], svix_id: str) -> None:
     )
 
     if not to_bot:
-        await notify_non_bot_email(email_id, email, attachments)
+        await notify_non_bot_email(
+            email_id,
+            email,
+            attachments,
+            reason=f"not addressed to {bridge_app.SETTINGS.inbound_address}",
+        )
+        return
+
+    if not is_bot_sender_allowed(email):
+        await notify_non_bot_email(
+            email_id,
+            email,
+            attachments,
+            reason="sender is not in BOT_SENDER_ALLOWLIST",
+        )
         return
 
     await notify_bot_email_received(email_id, email, attachments)
@@ -452,8 +485,9 @@ def build_activity_summary(decision: dict[str, Any]) -> str:
 
 
 def email_summary(email: dict[str, Any]) -> dict[str, Any]:
-    text = str(email.get("text") or "")
+    text = unescape(str(email.get("text") or ""))
     html = str(email.get("html") or "")
+    html_preview = html_to_display_text(html) if not text else ""
     return {
         "id": email.get("id"),
         "created_at": email.get("created_at"),
@@ -464,5 +498,5 @@ def email_summary(email: dict[str, Any]) -> dict[str, Any]:
         "message_id": email.get("message_id"),
         "headers": email.get("headers"),
         "text_preview": text[:8000],
-        "html_preview": html[:4000] if not text else "",
+        "html_preview": html_preview[:4000],
     }

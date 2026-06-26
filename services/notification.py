@@ -4,8 +4,7 @@ import asyncio
 from typing import Any
 
 from db.state import OutboundStatus, StepStatus
-from services.hermes_context import append_notification_to_user_context, parse_notification_target
-from services.telegram_rich import send_telegram_rich_text
+from services.hermes_context import append_notification_to_user_context
 from utils.email_display import render_email_markdown
 
 
@@ -34,10 +33,6 @@ async def _communicate_or_kill(
 def notification_target_supports_markdown_tables(target: str | None = None) -> bool:
     """All notification targets use the standard Markdown table template."""
     return True
-
-
-def notification_target_is_telegram(target: str | None) -> bool:
-    return parse_notification_target(str(target or "").strip()).platform.lower() == "telegram"
 
 
 def context_message_for_notification(
@@ -105,30 +100,6 @@ async def send_hermes_notification_text(target: str, message: str) -> tuple[str,
     if not bridge_app.SETTINGS.hermes_send_bin.exists():
         raise RuntimeError(
             f"hermes send binary not found: {bridge_app.SETTINGS.hermes_send_bin}"
-        )
-
-    if notification_target_is_telegram(target):
-        bridge_app.LOGGER.info(
-            "target %s is telegram; attempting rich send", target
-        )
-        try:
-            rich_result = await send_telegram_rich_text(target, message)
-            if rich_result.sent:
-                bridge_app.LOGGER.info(
-                    "telegram rich send succeeded for %s: %s",
-                    target,
-                    rich_result.stdout.strip(),
-                )
-                return rich_result.stdout, rich_result.stderr
-            if rich_result.reason:
-                bridge_app.LOGGER.info(
-                    "telegram rich notification skipped: %s", rich_result.reason
-                )
-        except Exception as exc:
-            bridge_app.LOGGER.warning("telegram rich notification fallback: %s", exc)
-    else:
-        bridge_app.LOGGER.info(
-            "target %s is not telegram; skipping rich send", target
         )
 
     process = await asyncio.create_subprocess_exec(

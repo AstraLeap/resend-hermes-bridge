@@ -34,7 +34,8 @@ if [[ -z "$HERMES_FOUND" ]]; then
     exit 1
 fi
 
-HERMES_CONFIG="$HOME/.hermes/config.yaml"
+HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
+HERMES_CONFIG="$HERMES_HOME/config.yaml"
 if [[ ! -f "$HERMES_CONFIG" ]]; then
     err "Hermes config not found at $HERMES_CONFIG"
     err "Run Hermes setup first, then rerun this installer"
@@ -83,7 +84,6 @@ fi
 
 is_placeholder() {
     local value="$1"
-    [[ -z "$value" ]] ||
     [[ "$value" == *_replace_me ]] ||
     [[ "$value" == *change-me* ]]
 }
@@ -106,7 +106,7 @@ read_env_value() {
     current="$(grep -E "^[[:space:]]*#?[[:space:]]*${key}=" "$ENV_FILE" | tail -1 || true)"
     current="${current#*=}"
     if is_placeholder "$current"; then
-        current="$default"
+        current=""
     fi
     echo "$current"
 }
@@ -118,23 +118,78 @@ prompt() {
     local is_secret="${4:-false}"
     local current
     current="$(read_env_value "$key" "$default")"
-    local prompt_text="$label"
-    if [[ -n "$current" ]] && [[ "$current" != "$default" ]]; then
-        prompt_text="$label [$current]"
-    fi
 
     local value=""
     if [[ "$is_secret" == "true" ]]; then
-        read -rsp "$prompt_text: " value
+        read -rsp "$label: " value
         echo
     else
-        read -rp "$prompt_text: " value
+        read -rp "$label: " value
     fi
 
     if [[ -z "$value" ]]; then
-        value="$current"
+        if [[ -n "$current" ]]; then
+            return
+        fi
+        value="$default"
     fi
     set_env_value "$key" "$value"
+}
+
+restart_hermes_gateway() {
+    if "$HERMES_FOUND" gateway restart >/dev/null 2>&1; then
+        ok "Hermes Gateway restarted"
+        return 0
+    fi
+
+    if command -v systemctl >/dev/null 2>&1 \
+        && systemctl --user list-unit-files hermes-gateway.service >/dev/null 2>&1; then
+        if systemctl --user restart hermes-gateway.service; then
+            ok "Hermes Gateway restarted via systemd"
+            return 0
+        fi
+    fi
+
+    warn "Could not restart Hermes Gateway automatically; restart it manually for the patch to take effect"
+}
+
+patch_telegram_cjk_rich_guard() {
+    local adapter_file="$HERMES_HOME/hermes-agent/plugins/platforms/telegram/adapter.py"
+    if [[ ! -f "$adapter_file" ]]; then
+        warn "Telegram adapter not found at $adapter_file; skipping CJK rich-message patch"
+        return 0
+    fi
+
+    if "$PYTHON_BIN" - "$adapter_file" <<'PY'
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+target = "            and not self._has_telegram_desktop_cjk_rich_garble_shape(content)"
+patched = (
+    "            # and not self._has_telegram_desktop_cjk_rich_garble_shape(content)"
+    "  # patched by resend-hermes-bridge install"
+)
+text = path.read_text(encoding="utf-8")
+if patched in text and target not in text:
+    print("Telegram CJK rich-message guard is already patched")
+    raise SystemExit(0)
+
+count = text.count(target)
+if count != 2:
+    print(f"Expected 2 Telegram CJK rich-message guard lines, found {count}", file=sys.stderr)
+    raise SystemExit(1)
+
+path.write_text(text.replace(target, patched), encoding="utf-8")
+print("Patched Telegram CJK rich-message guard lines: 2")
+PY
+    then
+        ok "Telegram CJK rich-message guard patched"
+    else
+        warn "Could not patch Telegram CJK rich-message guard; leaving Hermes adapter unchanged"
+    fi
 }
 
 info "Please fill in the required configuration:"
@@ -144,6 +199,8 @@ prompt "RESEND_DOMAIN" "Verified Resend sender domain (without @)" "example.com"
 prompt "BOT_FROM_LOCAL" "Bot inbox local part (e.g. bot)" "bot"
 prompt "OWNER_FROM_LOCAL" "Owner inbox local part (e.g. mail)" "mail"
 prompt "AI_NAME" "Display name for owner notices" "Hermes"
+prompt "RESEND_BRIDGE_PORT" "Resend bridge local port" "8765"
+prompt "BOT_SENDER_ALLOWLIST" "Bot sender allowlist, comma-separated (blank allows all)" ""
 prompt "NOTIFICATION_TARGET" "Notification platform (telegram/weixin/qqbot/wecom/discord/slack/signal)" "telegram"
 
 info "Installing resend-hermes-bridge systemd user service..."
@@ -159,7 +216,7 @@ Type=simple
 WorkingDirectory=$ROOT_DIR
 Environment="PATH=$HOME/.hermes/bin:$HOME/.hermes/hermes-agent/venv/bin:$HOME/.hermes/hermes-agent/node_modules/.bin:$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 EnvironmentFile=$ENV_FILE
-ExecStart=$VENV_DIR/bin/uvicorn app:app --host 127.0.0.1 --port 8765
+ExecStart=/bin/sh -c 'exec "$VENV_DIR/bin/uvicorn" app:app --host 127.0.0.1 --port "\$\${RESEND_BRIDGE_PORT:-8765}"'
 Restart=always
 RestartSec=5
 
@@ -178,6 +235,11 @@ else
     err "Fix Hermes config, then rerun this installer"
     exit 1
 fi
+
+info "Patching Hermes Telegram adapter to allow CJK rich messages..."
+patch_telegram_cjk_rich_guard
+info "Restarting Hermes Gateway so the Telegram adapter patch takes effect..."
+restart_hermes_gateway
 
 ok "Install complete. Edit $ENV_FILE if needed."
 info "If a Hermes session is already open, run /reload-mcp in that session."

@@ -100,6 +100,7 @@ class Settings:
     mcp_draft_ttl_seconds: int
     generated_attachment_roots: list[Path]
     hermes_email_task_toolsets: str
+    bot_sender_allowlist: str
 
     @property
     def inbound_address(self) -> str:
@@ -152,4 +153,5 @@ def load_settings() -> Settings:
                 "image_gen,memory,session_search,skills,terminal,vision,web"
             ),
         ).strip(),
+        bot_sender_allowlist=os.getenv("BOT_SENDER_ALLOWLIST", "").strip(),
     )

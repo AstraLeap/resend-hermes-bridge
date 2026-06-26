@@ -22,18 +22,12 @@ def as_list(value: Any) -> list[str]:
 
 
 def escape_markdown_table(value: Any) -> str:
-    text = str(value or "")
-    text = escape_html_autodetect(text)
+    text = decode_html_entities(value)
     return text.replace("\\", "\\\\").replace("|", "\\|").replace("\n", "<br>")
 
 
-def escape_html_autodetect(value: str) -> str:
-    return str(value or "").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def escape_code_block_text(value: str) -> str:
-    text = escape_html_autodetect(str(value or ""))
-    return text.replace("```", "'''")
+def decode_html_entities(value: Any) -> str:
+    return unescape(str(value or ""))
 
 
 def display_address(value: Any) -> str:
@@ -215,14 +209,13 @@ def render_email_markdown(
     lines.extend(render_markdown_table(["字段", "内容"], rows))
 
     body_label, body = email_body_block(payload, body_limit=body_limit)
+    body = decode_html_entities(body).replace("```", "'''")
     lines.extend(
         [
             "",
             f"**{body_label}**",
             "",
-            "```text",
-            escape_code_block_text(body),
-            "```",
+            body,
         ]
     )
     if show_attachments:
@@ -231,7 +224,7 @@ def render_email_markdown(
             display_attachments = payload.get("attachments")
         lines.extend(render_attachments_markdown(display_attachments))
     if footer:
-        lines.extend(["", escape_html_autodetect(footer)])
+        lines.extend(["", decode_html_entities(footer)])
     notice = "\n".join(lines)
     return truncate_notice(notice, notice_limit) if notice_limit is not None else notice
 

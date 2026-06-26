@@ -11,7 +11,7 @@ Type=simple
 WorkingDirectory=/path/to/resend-hermes-bridge
 Environment="PATH=/home/your-user/.hermes/bin:/home/your-user/.hermes/hermes-agent/venv/bin:/home/your-user/.hermes/hermes-agent/node_modules/.bin:/home/your-user/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 EnvironmentFile=/path/to/resend-hermes-bridge/.env
-ExecStart=/path/to/resend-hermes-bridge/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8765
+ExecStart=/bin/sh -c 'exec "/path/to/resend-hermes-bridge/.venv/bin/uvicorn" app:app --host 127.0.0.1 --port "$${RESEND_BRIDGE_PORT:-8765}"'
 Restart=always
 RestartSec=5
 
