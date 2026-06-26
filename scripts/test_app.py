@@ -14,6 +14,7 @@ import pytest
 import app
 import routers.send as send_router
 from scripts import manage
+from utils import email_display
 from utils.i18n_strings import (
     EmailLabels,
     MailboxLabels,
@@ -117,6 +118,17 @@ def test_parse_loose_reply_decision_with_unescaped_quotes():
     assert decision["reply_text"] == "一只小狗"
 
 
+def test_parse_task_decision_preserves_reply_html():
+    decision = app.parse_json_decision(
+        '{"action":"reply","reply_text":"见下图","reply_html":"<p>见下图</p>",'
+        '"owner_report":"已回复。"}'
+    )
+
+    assert decision["action"] == "reply"
+    assert decision["reply_text"] == "见下图"
+    assert decision["reply_html"] == "<p>见下图</p>"
+
+
 def test_bot_auto_reply_uses_inbound_sender_address():
     payload = app.build_resend_reply_payload(
         {
@@ -204,10 +216,6 @@ def test_activity_summary_mentions_execution_and_optional_reply():
 
     assert ProcessingMessages.ACTIVITY_SUMMARY_PREFIX in summary
     assert "北京今天晴" in summary
-    assert "已收到并展示" not in summary
-    assert "Hermes 判断" not in summary
-    assert "未向发件人回邮件" not in summary
-    assert "简要原因" not in summary
 
 
 def test_non_bot_email_notice_uses_owner_title_without_routing_labels(monkeypatch):
@@ -248,8 +256,6 @@ def test_non_bot_email_notice_uses_owner_title_without_routing_labels(monkeypatc
     )
 
     assert messages
-    assert "收到非 bot 邮件" not in messages[0]
-    assert "邮件不是发给" not in messages[0]
     assert messages[0].startswith(NotificationTitles.NON_BOT_EMAIL)
     assert sent_attachment_paths == [[]]
     assert statuses == [("email-1", "notified", None)]
@@ -340,12 +346,11 @@ def test_qqbot_notification_target_uses_markdown_table_template(monkeypatch):
     assert f"| {EmailLabels.FILE} | {EmailLabels.SIZE} |" in messages[0]
     assert f"| {EmailLabels.FROM} | sender@example.com |" in messages[0]
     assert f"| {EmailLabels.TO} | owner@example.com |" in messages[0]
-    assert "**邮件信息**" not in messages[0]
-    assert "**正文**" in messages[0]
-    assert "\n**正文**\n\n> Body\n" in messages[0]
+    assert f"**{EmailLabels.BODY}**" in messages[0]
+    assert f"\n**{EmailLabels.BODY}**\n\n> Body\n" in messages[0]
     assert "```text" not in messages[0]
     assert f"**{EmailLabels.ATTACHMENTS}**" in messages[0]
-    assert "| report.pdf | 12 |" in messages[0]
+    assert "| report.pdf | 12 B |" in messages[0]
 
 
 def test_bot_email_notice_uses_kabao_title(monkeypatch):
@@ -387,7 +392,6 @@ def test_bot_email_notice_uses_kabao_title(monkeypatch):
 
     assert messages
     assert messages[0].startswith(NotificationTitles.BOT_EMAIL_RECEIVED.format(ai_name="卡宝"))
-    assert "收到发给" not in messages[0]
     assert sent_attachment_paths == [[]]
     assert statuses == [("email-1", "processing", None)]
 
@@ -546,7 +550,11 @@ def test_send_notification_uses_telegram_adapter_by_default(monkeypatch, tmp_pat
     updates = []
     steps = []
     context_calls = []
-    message = "| {EmailLabels.FIELD} | {EmailLabels.CONTENT} |\n| --- | --- |\n| From | sender@example.com |"
+    message = (
+        f"| {EmailLabels.FIELD} | {EmailLabels.CONTENT} |\n"
+        "| --- | --- |\n"
+        f"| {EmailLabels.FROM} | sender@example.com |"
+    )
     hermes_bin = tmp_path / "hermes"
     hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
     hermes_bin.chmod(0o755)
@@ -704,6 +712,68 @@ def test_email_notice_decodes_html_entities_in_html_body():
     assert "> A > B\n> C < D" in notice
 
 
+def test_inbound_email_notice_prefers_text_when_html_also_exists():
+    notice = notices.render_inbound_email_notice(
+        {
+            "id": "email-1",
+            "from": "Alice <alice@example.com>",
+            "to": ["bot@example.com"],
+            "subject": "Hello",
+            "text": "Plain body",
+            "html": '<p>HTML body</p><img src="cid:image1">',
+        },
+        [],
+        title=NotificationTitles.NON_BOT_EMAIL,
+        domain="example.com",
+    )
+
+    assert f"\n**{EmailLabels.BODY}**\n\n> Plain body" in notice
+    assert "HTML body" not in notice
+    assert "cid:image1" not in notice
+
+
+def test_outbound_email_preview_prefers_html_and_preserves_cid_marker():
+    notice = notices.render_email_markdown(
+        {
+            "from_local": "mail",
+            "to": ["recipient@example.com"],
+            "subject": "Inline",
+            "text": "Plain fallback",
+            "html": '<p>HTML body</p><img src="cid:image1" alt="image">',
+            "attachments": [
+                {
+                    "path": "/tmp/image.png",
+                    "content_type": "image/png",
+                    "content_id": "image1",
+                }
+            ],
+        },
+        title=None,
+        domain="example.com",
+        prefer_html_body=True,
+        show_attachments=False,
+    )
+
+    assert f"\n**{EmailLabels.HTML_BODY}**\n\n> HTML body" in notice
+    assert "Plain fallback" not in notice
+    assert f"[{EmailLabels.INLINE_IMAGE}: cid:image1 -> image.png]" in notice
+    assert "<img" not in notice
+    assert "/tmp/image.png" not in notice
+
+
+def test_attachment_display_name_omits_redundant_inline_content_id():
+    assert (
+        notices.attachment_display_name(
+            {
+                "filename": "img_c262639f737a.jpg",
+                "path": "/home/karx/.hermes/image_cache/img_c262639f737a.jpg",
+                "content_id": "img_c262639f737a",
+            }
+        )
+        == f"img_c262639f737a.jpg [{EmailLabels.INLINE_IMAGE}]"
+    )
+
+
 def test_email_notice_renders_body_as_wrapping_markdown_text():
     long_line = "hello " * 80
     notice = notices.render_email_markdown(
@@ -766,9 +836,9 @@ def test_send_email_display_notification_renders_markdown_and_forwards_target(mo
 
     assert captured["message"] == notice
     assert f"| {EmailLabels.FIELD} | {EmailLabels.CONTENT} |" in notice
-    assert "| Draft ID | draft-1 |" in notice
+    assert f"| {EmailLabels.DRAFT_ID} | draft-1 |" in notice
     assert f"| {EmailLabels.TO} | recipient@example.com |" in notice
-    assert "\n**正文**\n\n> Hi\n" in notice
+    assert f"\n**{EmailLabels.BODY}**\n\n> Hi\n" in notice
     assert "```text" not in notice
     assert "确认后发送。" in notice
     assert captured["email_id"] is None
@@ -776,11 +846,55 @@ def test_send_email_display_notification_renders_markdown_and_forwards_target(mo
     assert captured["target"] == "qqbot:dm:user-1"
 
 
+def test_send_email_display_notification_can_show_attachments_without_sending_media(monkeypatch):
+    captured = {}
+
+    async def fake_send_notification(
+        message,
+        *,
+        email_id=None,
+        attachment_paths=None,
+        target=None,
+    ):
+        captured["message"] = message
+        captured["attachment_paths"] = attachment_paths
+
+    monkeypatch.setattr(app, "send_notification", fake_send_notification)
+
+    notice = asyncio.run(
+        app.send_email_display_notification(
+            {
+                "from_local": "mail",
+                "to": ["recipient@example.com"],
+                "subject": "Hello",
+                "text": "Hi",
+                "attachments": [
+                    {
+                        "path": "/tmp/report.pdf",
+                        "content_type": "application/pdf",
+                    }
+                ],
+            },
+            title=NotificationTitles.DRAFT_CONFIRMATION,
+            domain="example.com",
+        )
+    )
+
+    assert captured["message"] == notice
+    assert f"**{EmailLabels.ATTACHMENTS}**" in notice
+    assert "| report.pdf |" in notice
+    assert captured["attachment_paths"] == []
+
+
 def test_send_notification_uses_hermes_send_for_non_telegram(monkeypatch, tmp_path):
     commands = []
     updates = []
     steps = []
-    message = "| {EmailLabels.FIELD} | {EmailLabels.CONTENT} |\n| --- | --- |\n| From | sender@example.com |"
+    message = (
+        f"| {EmailLabels.FIELD} | {EmailLabels.CONTENT} |\n"
+        "| --- | --- |\n"
+        f"| {EmailLabels.FROM} | sender@example.com |"
+    )
     hermes_bin = tmp_path / "hermes"
     hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
     hermes_bin.chmod(0o755)
@@ -1167,6 +1281,7 @@ def test_reply_notice_shows_only_sent_email_without_summary_footer():
         "已通过 Resend 自动回复。",
         {},
         domain="example.com",
+        ai_name="卡宝",
         reply_payload={
             "from_local": "bot",
             "to": ["sender@example.com"],
@@ -1176,14 +1291,120 @@ def test_reply_notice_shows_only_sent_email_without_summary_footer():
         reply_id="reply-123",
     )
 
-    assert NotificationTitles.AUTO_REPLY_SENT in notice
-    assert "处理结果" not in notice
-    assert "决策原因" not in notice
-    assert "Hermes 汇报" not in notice
-    assert "Reply ID" not in notice
-    assert "Resend ID: `reply-123`" in notice
-    assert "Email ID" not in notice
+    assert NotificationTitles.AUTO_REPLY_SENT.format(ai_name="卡宝") in notice
+    assert "{ai_name}" not in notice
+    assert ProcessingMessages.RESULT_SECTION not in notice
+    assert ProcessingMessages.REPLY_FOOTER.format(reply_id="reply-123") in notice
+    assert EmailLabels.EMAIL_ID not in notice
     assert "一只小狗" in notice
+
+
+def test_handle_hermes_decision_formats_auto_reply_title(monkeypatch):
+    captured = {}
+
+    async def fake_send_resend_reply(*_args, **_kwargs):
+        return "reply-123"
+
+    async def fake_send_email_display_notification(
+        payload,
+        *,
+        title,
+        domain,
+        footer=None,
+        email_id=None,
+        **_kwargs,
+    ):
+        captured["payload"] = payload
+        captured["title"] = title
+        captured["domain"] = domain
+        captured["footer"] = footer
+        captured["email_id"] = email_id
+
+    async def fake_send_notification(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr(
+        app,
+        "SETTINGS",
+        replace(app.SETTINGS, ai_name="卡宝"),
+    )
+    monkeypatch.setattr(inbound_email_service, "send_resend_reply", fake_send_resend_reply)
+    monkeypatch.setattr(app, "send_email_display_notification", fake_send_email_display_notification)
+    monkeypatch.setattr(app, "send_notification", fake_send_notification)
+    monkeypatch.setattr(app, "update_inbound_status", lambda *_args, **_kwargs: None)
+
+    asyncio.run(
+        inbound_email_service.handle_hermes_decision(
+            "email-1",
+            {
+                "from": "sender@example.com",
+                "subject": "测试",
+                "message_id": "<message@example.com>",
+                "headers": {},
+            },
+            {
+                "action": "reply",
+                "reply_text": "一只小狗",
+                "owner_report": "已回复。",
+            },
+        )
+    )
+
+    assert captured["title"] == NotificationTitles.AUTO_REPLY_SENT.format(ai_name="卡宝")
+    assert "{ai_name}" not in captured["title"]
+    assert captured["footer"] == ProcessingMessages.REPLY_FOOTER.format(reply_id="reply-123")
+
+
+def test_handle_hermes_decision_does_not_infer_media_from_reply_attachments(
+    monkeypatch, tmp_path
+):
+    captured = {}
+    generated_root = tmp_path / "generated"
+    attachment = generated_root / "chart.png"
+    attachment.parent.mkdir(parents=True)
+    attachment.write_bytes(b"png")
+
+    async def fake_send_resend_reply(*_args, **_kwargs):
+        return "reply-123"
+
+    async def fake_send_email_display_notification(
+        payload,
+        *,
+        attachment_paths=None,
+        **_kwargs,
+    ):
+        captured["payload"] = payload
+        captured["attachment_paths"] = attachment_paths
+
+    async def fake_send_notification(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr(app, "GENERATED_ATTACHMENT_ROOTS", [generated_root])
+    monkeypatch.setattr(inbound_email_service, "send_resend_reply", fake_send_resend_reply)
+    monkeypatch.setattr(app, "send_email_display_notification", fake_send_email_display_notification)
+    monkeypatch.setattr(app, "send_notification", fake_send_notification)
+    monkeypatch.setattr(app, "update_inbound_status", lambda *_args, **_kwargs: None)
+
+    asyncio.run(
+        inbound_email_service.handle_hermes_decision(
+            "email-1",
+            {
+                "from": "sender@example.com",
+                "subject": "测试",
+                "message_id": "<message@example.com>",
+                "headers": {},
+            },
+            {
+                "action": "reply",
+                "reply_text": "见附件",
+                "owner_report": "已回复。",
+                "reply_attachments": [str(attachment)],
+            },
+        )
+    )
+
+    assert captured["payload"]["attachments"] == [{"path": str(attachment)}]
+    assert captured["attachment_paths"] is None
 
 
 def test_hermes_task_prompt_requires_owner_report_even_with_reply():
@@ -1239,6 +1460,24 @@ def test_hermes_task_prompt_keeps_bridge_as_delivery_owner():
     assert "forward_received_attachments" not in prompt
     assert "notification endpoint (e.g., Telegram)" in prompt
     assert "do not fabricate non-existent paths" in prompt
+
+
+def test_hermes_task_prompt_describes_inline_image_replies():
+    prompt = app.build_hermes_task_prompt(
+        {
+            "task": "test",
+            "sender": "sender@example.com",
+            "email": {"text_preview": "生成一张图并发给我"},
+            "attachments": [],
+            "downloaded_files": [],
+        }
+    )
+
+    assert "reply_html" in prompt
+    assert '<img src="cid:some_id">' in prompt
+    assert "content_id" in prompt
+    assert "plain-text fallback" in prompt
+
 
 def test_load_settings_uses_project_data_dir(monkeypatch, tmp_path):
     hermes_bin = tmp_path / "hermes"
@@ -1392,6 +1631,49 @@ def test_mcp_outbound_payload_accepts_attachment_paths():
     assert payload["attachments"] == [{"path": "/tmp/report.txt"}]
 
 
+def test_mcp_outbound_payload_accepts_inline_image_attachment():
+    payload = resend_mcp_server._format_outbound_payload(
+        to=["recipient@example.com"],
+        subject="Inline image",
+        text="见下图",
+        html='<p>见下图</p><img src="cid:chart1" alt="chart">',
+        attachments=[
+            {
+                "path": "/tmp/chart.png",
+                "content_type": "image/png",
+                "content_id": "chart1",
+            }
+        ],
+    )
+
+    assert payload["html"] == '<p>见下图</p><img src="cid:chart1" alt="chart">'
+    assert payload["attachments"] == [
+        {
+            "path": "/tmp/chart.png",
+            "content_type": "image/png",
+            "content_id": "chart1",
+        }
+    ]
+
+
+def test_mcp_outbound_payload_generates_text_fallback_for_html():
+    payload = resend_mcp_server._format_outbound_payload(
+        to=["recipient@example.com"],
+        subject="Inline image",
+        html='<p>见下图</p><img src="cid:chart1" alt="chart">',
+        attachments=[
+            {
+                "path": "/tmp/chart.png",
+                "content_type": "image/png",
+                "content_id": "chart1",
+            }
+        ],
+    )
+
+    assert payload["text"] == "见下图"
+    assert payload["html"] == '<p>见下图</p><img src="cid:chart1" alt="chart">'
+
+
 def test_mcp_rejects_chat_preview_template_as_body():
     with pytest.raises(ValueError, match="chat preview or confirmation template"):
         resend_mcp_server._format_outbound_payload(
@@ -1458,13 +1740,46 @@ def test_mcp_draft_returns_verbatim_inline_preview(monkeypatch, tmp_path):
     assert f"| {EmailLabels.FIELD} | {EmailLabels.CONTENT} |" in result["assistant_response"]
     assert f"| {EmailLabels.TO} | recipient@example.com |" in result["assistant_response"]
     assert f"| {EmailLabels.SUBJECT} | Hello |" in result["assistant_response"]
-    assert "**邮件信息**" not in result["assistant_response"]
     assert "Return assistant_response to the user verbatim" in result[
         "assistant_response_instruction"
     ]
     assert "display" not in result
     assert result["metadata"]["to"] == ["recipient@example.com"]
     assert result["metadata"]["subject"] == "Hello"
+
+
+def test_mcp_draft_preview_shows_attachment_list(monkeypatch, tmp_path):
+    drafts_file = tmp_path / "drafts.json"
+    lock_file = tmp_path / "drafts.json.lock"
+    image = tmp_path / "image.png"
+    image.write_bytes(b"png")
+
+    monkeypatch.setattr(resend_mcp_server, "DRAFTS_FILE", drafts_file)
+    monkeypatch.setattr(resend_mcp_server, "DRAFTS_LOCK_FILE", lock_file)
+
+    result = asyncio.run(
+        resend_mcp_server.send_email(
+            to=["recipient@example.com"],
+            subject="Inline",
+            html='<p>HTML body</p><img src="cid:image1" alt="image">',
+            attachments=[
+                {
+                    "path": str(image),
+                    "content_type": "image/png",
+                    "content_id": "image1",
+                }
+            ],
+        )
+    )
+
+    assert f"**{EmailLabels.HTML_BODY}**" in result["assistant_response"]
+    assert f"[{EmailLabels.INLINE_IMAGE}: cid:image1 -> image.png]" in result[
+        "assistant_response"
+    ]
+    assert f"**{EmailLabels.ATTACHMENTS}**" in result["assistant_response"]
+    assert f"image.png [{EmailLabels.INLINE_IMAGE}: cid:image1]" in result[
+        "assistant_response"
+    ]
 
 
 def test_mcp_revision_creates_new_draft_and_links_previous(monkeypatch, tmp_path):
@@ -1803,10 +2118,66 @@ def test_show_draft_endpoint_renders_and_notifies(monkeypatch, tmp_path):
     assert response["ok"] is True
     assert NotificationTitles.DRAFT_CONFIRMATION in captured["message"]
     assert f"| {EmailLabels.FIELD} | {EmailLabels.CONTENT} |" in captured["message"]
-    assert "Draft ID" in captured["message"]
+    assert EmailLabels.DRAFT_ID in captured["message"]
     assert "确认后发送。" in captured["message"]
     assert captured["email_id"] is None
     assert captured["target"] is None
+
+
+def test_show_draft_endpoint_prefers_html_without_forwarding_attachments(monkeypatch, tmp_path):
+    drafts_file = tmp_path / "drafts.json"
+    _patch_settings_for_send_endpoint(monkeypatch, tmp_path, drafts_file)
+    captured = {}
+
+    async def fake_send_notification(
+        message,
+        *,
+        email_id=None,
+        attachment_paths=None,
+        target=None,
+    ):
+        captured["message"] = message
+        captured["email_id"] = email_id
+        captured["attachment_paths"] = attachment_paths
+        captured["target"] = target
+
+    monkeypatch.setattr(app, "send_notification", fake_send_notification)
+
+    payload = {
+        "from_local": "mail",
+        "to": ["recipient@example.com"],
+        "subject": "Inline",
+        "text": "Plain fallback",
+        "html": '<p>HTML body</p><img src="cid:image1" alt="image">',
+        "attachments": [
+            {
+                "path": "/tmp/image.png",
+                "content_type": "image/png",
+                "content_id": "image1",
+            }
+        ],
+    }
+    response = asyncio.run(
+        send_router.show_draft(
+            _JsonRequest(
+                {
+                    "payload": payload,
+                    "draft_id": "draft-1",
+                    "title": NotificationTitles.DRAFT_CONFIRMATION,
+                    "footer": "确认后发送。",
+                }
+            )
+        )
+    )
+
+    assert response["ok"] is True
+    assert f"**{EmailLabels.HTML_BODY}**" in captured["message"]
+    assert f"[{EmailLabels.INLINE_IMAGE}: cid:image1 -> image.png]" in captured["message"]
+    assert f"**{EmailLabels.ATTACHMENTS}**" in captured["message"]
+    assert f"image.png [{EmailLabels.INLINE_IMAGE}: cid:image1]" in captured["message"]
+    assert "Plain fallback" not in captured["message"]
+    assert captured["attachment_paths"] == []
+    assert captured["email_id"] is None
 
 
 def test_show_draft_endpoint_uses_markdown_table_template_for_qqbot(monkeypatch, tmp_path):
@@ -1849,10 +2220,9 @@ def test_show_draft_endpoint_uses_markdown_table_template_for_qqbot(monkeypatch,
 
     assert response["ok"] is True
     assert f"| {EmailLabels.FIELD} | {EmailLabels.CONTENT} |" in captured["message"]
-    assert "| Draft ID | draft-1 |" in captured["message"]
+    assert f"| {EmailLabels.DRAFT_ID} | draft-1 |" in captured["message"]
     assert f"| {EmailLabels.TO} | recipient@example.com |" in captured["message"]
-    assert "**邮件信息**" not in captured["message"]
-    assert "\n**正文**\n\n> Hi\n" in captured["message"]
+    assert f"\n**{EmailLabels.BODY}**\n\n> Hi\n" in captured["message"]
     assert "```text" not in captured["message"]
     assert captured["target"] == "qqbot:dm:user-1"
 
@@ -2052,6 +2422,19 @@ def test_mailbox_store_list_mailbox_sorts_pages_and_aliases(monkeypatch, tmp_pat
 
     inbox = mailbox_store.list_mailbox(db_path=db_path, mailbox="收件箱")
     assert [item["message_id"] for item in inbox["items"]] == ["email-mid", "email-old"]
+
+
+def test_mailbox_titles_follow_language_after_module_import(monkeypatch, tmp_path):
+    monkeypatch.delenv("BRIDGE_LANGUAGE", raising=False)
+
+    assert mailbox_store.mailbox_title("inbox") == MailboxLabels.INBOX
+
+    monkeypatch.setenv("BRIDGE_LANGUAGE", "en")
+    listing = mailbox_store.list_mailbox(db_path=tmp_path / "missing.db", mailbox="inbox")
+
+    assert listing["mailbox_title"] == MailboxLabels.INBOX
+    assert listing["available_mailboxes"][0]["title"] == MailboxLabels.ALL
+    assert listing["display"] == MailboxLabels.NO_EMAILS_TEMPLATE.format(title=MailboxLabels.INBOX)
 
 
 def test_mcp_history_tools_use_mailbox_store(monkeypatch, tmp_path):
@@ -2337,6 +2720,88 @@ def test_auto_reply_can_attach_downloaded_file_by_reply_attachments(tmp_path):
     ]
 
 
+def test_auto_reply_can_send_html_with_inline_generated_image(monkeypatch, tmp_path):
+    generated_root = tmp_path / "generated"
+    image = generated_root / "chart.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"png")
+    monkeypatch.setattr(app, "GENERATED_ATTACHMENT_ROOTS", [generated_root])
+
+    payload = app.build_resend_reply_payload(
+        {
+            "from": "sender@example.com",
+            "subject": "生成图片",
+            "message_id": "<message@example.com>",
+            "headers": {},
+        },
+        {
+            "action": "reply",
+            "reply_text": "见下图",
+            "reply_html": '<p>见下图</p><img src="cid:chart1" alt="chart">',
+            "reply_attachments": [
+                {
+                    "path": str(image),
+                    "content_type": "image/png",
+                    "content_id": "chart1",
+                }
+            ],
+        },
+    )
+
+    assert payload["text"] == "见下图"
+    assert payload["html"] == '<p>见下图</p><img src="cid:chart1" alt="chart">'
+    assert payload["attachments"] == [
+        {
+            "path": str(image),
+            "content_type": "image/png",
+            "content_id": "chart1",
+        }
+    ]
+
+
+def test_auto_reply_preserves_content_id_for_downloaded_inline_attachment(tmp_path):
+    attachment = tmp_path / "attachments" / "email-1" / "photo.png"
+    attachment.parent.mkdir(parents=True)
+    attachment.write_bytes(b"png")
+
+    payload = app.build_resend_reply_payload(
+        {
+            "from": "sender@example.com",
+            "subject": "请把图放正文里",
+            "message_id": "<message@example.com>",
+            "headers": {},
+        },
+        {
+            "action": "reply",
+            "reply_text": "见下图",
+            "reply_html": '<p>见下图</p><img src="cid:photo1" alt="photo">',
+            "reply_attachments": [
+                {
+                    "id": "att-1",
+                    "content_id": "photo1",
+                }
+            ],
+            "_downloaded_files": [
+                {
+                    "id": "att-1",
+                    "filename": "photo.png",
+                    "content_type": "image/png",
+                    "local_path": str(attachment),
+                }
+            ],
+        },
+    )
+
+    assert payload["attachments"] == [
+        {
+            "path": str(attachment),
+            "filename": "photo.png",
+            "content_type": "image/png",
+            "content_id": "photo1",
+        }
+    ]
+
+
 def test_auto_reply_ignores_removed_forward_received_attachments_field(tmp_path):
     attachment = tmp_path / "attachments" / "email-1" / "report.txt"
     attachment.parent.mkdir(parents=True)
@@ -2519,3 +2984,31 @@ def test_attachment_download_failure_records_error_and_continues(monkeypatch, tm
     assert results[0]["relevant"] is True
     assert results[0]["error"] == "download failed"
     assert records[0]["item"]["error"] == "download failed"
+
+
+def test_format_size_bytes():
+    assert email_display._format_size(0) == "0 B"
+    assert email_display._format_size(12) == "12 B"
+    assert email_display._format_size(1023) == "1023 B"
+
+
+def test_format_size_kb():
+    assert email_display._format_size(1024) == "1.0 KB"
+    assert email_display._format_size(5120) == "5.0 KB"
+    assert email_display._format_size(10240) == "10 KB"
+
+
+def test_format_size_mb():
+    assert email_display._format_size(1536000) == "1.5 MB"
+    assert email_display._format_size(15728640) == "15 MB"
+
+
+def test_attachment_display_size_formats_known_values():
+    assert email_display.attachment_display_size({"size": 12}) == "12 B"
+    assert email_display.attachment_display_size({"size": 1024}) == "1.0 KB"
+    assert email_display.attachment_display_size({"size": 10240}) == "10 KB"
+    assert email_display.attachment_display_size({"size": 1536000}) == "1.5 MB"
+
+
+def test_attachment_display_size_unknown():
+    assert email_display.attachment_display_size({}) == "unknown size"

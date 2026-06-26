@@ -46,12 +46,6 @@ MAILBOX_DIRECTIONS = {
     "sent": "outbound",
     "trash": "all",
 }
-MAILBOX_TITLES = {
-    "all": MailboxLabels.ALL,
-    "inbox": MailboxLabels.INBOX,
-    "sent": MailboxLabels.SENT,
-    "trash": MailboxLabels.TRASH,
-}
 MAX_LABEL_LENGTH = 64
 MAX_SEARCH_LIMIT = 100
 DEFAULT_BODY_LIMIT = 12000
@@ -235,6 +229,7 @@ def list_mailbox(
     include_deleted: bool = False,
 ) -> dict[str, Any]:
     normalized_mailbox = normalize_mailbox(mailbox)
+    title = mailbox_title(normalized_mailbox)
     deleted_only = normalized_mailbox == "trash"
     result = search_mailbox(
         db_path=db_path,
@@ -251,13 +246,13 @@ def list_mailbox(
         **result,
         "items": items,
         "mailbox": normalized_mailbox,
-        "mailbox_title": MAILBOX_TITLES[normalized_mailbox],
+        "mailbox_title": title,
         "sort": "timestamp_desc",
         "available_mailboxes": [
-            {"mailbox": "all", "title": MAILBOX_TITLES["all"]},
-            {"mailbox": "inbox", "title": MAILBOX_TITLES["inbox"]},
-            {"mailbox": "sent", "title": MAILBOX_TITLES["sent"]},
-            {"mailbox": "trash", "title": MAILBOX_TITLES["trash"]},
+            {"mailbox": "all", "title": mailbox_title("all")},
+            {"mailbox": "inbox", "title": mailbox_title("inbox")},
+            {"mailbox": "sent", "title": mailbox_title("sent")},
+            {"mailbox": "trash", "title": mailbox_title("trash")},
         ],
     }
     listing["display"] = format_mailbox_listing(listing)
@@ -716,6 +711,15 @@ def _limit_text(value: Any, limit: int) -> str:
     if limit <= 0 or len(text) <= limit:
         return text
     return text[:limit].rstrip() + "\n...[truncated]"
+
+
+def mailbox_title(mailbox: str) -> str:
+    return {
+        "all": MailboxLabels.ALL,
+        "inbox": MailboxLabels.INBOX,
+        "sent": MailboxLabels.SENT,
+        "trash": MailboxLabels.TRASH,
+    }[mailbox]
 
 
 def format_mailbox_listing(result: dict[str, Any]) -> str:

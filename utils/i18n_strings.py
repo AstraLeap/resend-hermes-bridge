@@ -45,6 +45,7 @@ _STRINGS = {
         "email.content": "内容",
         "email.file": "文件",
         "email.size": "大小",
+        "email.inline_image": "内联图片",
         "email.more_attachments": "还有 {count} 个附件",
         "email.from": "发件人",
         "email.to": "收件人",
@@ -116,6 +117,7 @@ _STRINGS = {
         "email.content": "Content",
         "email.file": "File",
         "email.size": "Size",
+        "email.inline_image": "Inline image",
         "email.more_attachments": "{count} more attachments",
         "email.from": "From",
         "email.to": "To",
@@ -197,6 +199,7 @@ class EmailLabels:
     CONTENT = _LocalizedString("email.content")
     FILE = _LocalizedString("email.file")
     SIZE = _LocalizedString("email.size")
+    INLINE_IMAGE = _LocalizedString("email.inline_image")
     MORE_ATTACHMENTS = _LocalizedString("email.more_attachments")
     FROM = _LocalizedString("email.from")
     TO = _LocalizedString("email.to")

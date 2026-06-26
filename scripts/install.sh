@@ -147,15 +147,19 @@ prompt_language() {
   info "  1) 中文 (zh)"
   info "  2) English (en)"
   local choice=""
-  read -rp "Enter 1 or 2 [default: 1]: " choice
+  read -rp "Enter 1 or 2 [default: $current]: " choice
   case "$choice" in
     2 | en | En | EN | english | English)
       set_env_value "BRIDGE_LANGUAGE" "en"
       ok "Using English"
       ;;
-    1 | zh | Zh | ZH | chinese | 中文 | "")
+    1 | zh | Zh | ZH | chinese | 中文)
       set_env_value "BRIDGE_LANGUAGE" "zh"
       ok "使用中文 / Using Chinese"
+      ;;
+    "")
+      set_env_value "BRIDGE_LANGUAGE" "$current"
+      ok "Keeping bridge language: $current"
       ;;
     *)
       warn "Unknown choice '$choice', defaulting to Chinese"
@@ -236,6 +240,14 @@ platforms = config.setdefault("platforms", {})
 if not isinstance(platforms, dict):
     raise SystemExit("Hermes config.yaml has an invalid platforms value")
 
+top_level_telegram = config.setdefault("telegram", {})
+if not isinstance(top_level_telegram, dict):
+    raise SystemExit("Hermes config.yaml has an invalid telegram value")
+
+top_level_extra = top_level_telegram.setdefault("extra", {})
+if not isinstance(top_level_extra, dict):
+    raise SystemExit("Hermes config.yaml has an invalid telegram.extra value")
+
 telegram = platforms.setdefault("telegram", {})
 if not isinstance(telegram, dict):
     raise SystemExit("Hermes config.yaml has an invalid platforms.telegram value")
@@ -244,6 +256,8 @@ extra = telegram.setdefault("extra", {})
 if not isinstance(extra, dict):
     raise SystemExit("Hermes config.yaml has an invalid platforms.telegram.extra value")
 
+top_level_extra["rich_messages"] = True
+top_level_extra["rich_drafts"] = True
 extra["rich_messages"] = True
 extra["rich_drafts"] = True
 path.write_text(

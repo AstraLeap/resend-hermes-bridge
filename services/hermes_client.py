@@ -55,6 +55,7 @@ The email may contain attachments or inline images, PDFs, documents, spreadsheet
 - Whether or not you reply to the sender, you must fill in owner_report, because owner_report is the final report shown to the owner.
 - Do not call send_email, send_message, hermes send, Resend, Telegram, or any other outbound-sending tool yourself; the bridge service will handle subsequent sending.
 - If you generate images, files, or other content that needs to accompany a reply or report, save them under the {generated_root_text} directory and provide their absolute paths in reply_attachments or owner_report_attachments. Only use files you generated through tools, or existing relevant local_path entries from downloaded_files; do not fabricate non-existent paths.
+- To display an image inside an email reply body, use reply_html with an HTML `<img src="cid:some_id">` tag, and include the matching image in reply_attachments as an object with path/local_path, content_type, and content_id equal to `some_id`. Use plain attachment paths only for normal attachments, not inline images. Keep reply_text as a plain-text fallback when practical.
 
 Return strict JSON; do not use Markdown code blocks and do not output any text outside JSON. Fields:
 
@@ -64,7 +65,8 @@ Return strict JSON; do not use Markdown code blocks and do not output any text o
 - owner_report_attachments: optional array. Local file paths sent along with the final owner report to the notification endpoint (e.g., Telegram); these are not sent to the email sender.
 - reply_subject: optional reply subject.
 - reply_text: optional reply body.
-- reply_attachments: optional array. Attachment paths to include in the email reply sent to `sender`; prefer existing local_path entries from downloaded_files, or absolute paths under the generated directory. If you need to forward one of the received original attachments with the reply, specify the corresponding downloaded_files entry here.
+- reply_html: optional HTML reply body. Use this when formatting, links, or inline images are needed. Inline images must use CID references that match reply_attachments[].content_id.
+- reply_attachments: optional array. Attachment paths or objects to include in the email reply sent to `sender`; prefer existing local_path entries from downloaded_files, or absolute paths under the generated directory. For inline images, use objects such as {{"path": "/absolute/image.png", "content_type": "image/png", "content_id": "image1"}} and reference them in reply_html as `<img src="cid:image1">`. If you need to forward one of the received original attachments with the reply, specify the corresponding downloaded_files entry here.
 
 Inbound email data:
 {prompt_record_json}
@@ -148,6 +150,7 @@ def parse_json_decision(content: str) -> dict[str, Any]:
         result["action"] = action
     result.setdefault("reply_subject", "")
     result.setdefault("reply_text", "")
+    result.setdefault("reply_html", "")
     result.setdefault("reply_attachments", [])
     result.setdefault("owner_report_attachments", [])
     result.pop("forward_received_attachments", None)
@@ -188,6 +191,7 @@ def parse_loose_decision_object(content: str, parse_error: str) -> dict[str, Any
         "owner_report_attachments",
         "reply_subject",
         "reply_text",
+        "reply_html",
         "reply_attachments",
     )
     pattern = r'"(' + "|".join(re.escape(key) for key in keys) + r')"\s*:'
@@ -211,6 +215,7 @@ def parse_loose_decision_object(content: str, parse_error: str) -> dict[str, Any
     values.setdefault("action", "notify")
     values.setdefault("reply_subject", "")
     values.setdefault("reply_text", "")
+    values.setdefault("reply_html", "")
     values.setdefault("reply_attachments", [])
     values.setdefault("owner_report", HermesMessages.MALFORMED_JSON)
     values["_parse_warning"] = parse_error
@@ -250,6 +255,7 @@ def fallback_notify_decision(content: str, reason: str) -> dict[str, Any]:
         "action": "notify",
         "reply_subject": "",
         "reply_text": "",
+        "reply_html": "",
         "reply_attachments": [],
         "owner_report_attachments": [],
         "owner_report": summary[:3000],

@@ -175,7 +175,6 @@ def _confirmation_markdown(
         title=NotificationTitles.DRAFT_CONFIRMATION,
         domain=FROM_DOMAIN,
         footer=McpMessages.DRAFT_FOOTER.format(draft_id=draft_id),
-        show_attachments=False,
     )
 
 
@@ -267,6 +266,10 @@ def _format_outbound_payload(
 
     body_text = _normalize_body_text(text)
     body_html = _normalize_html_body(html)
+    if body_html and not body_text:
+        body_text = _normalize_body_text(html_to_display_text(body_html))
+        if not body_text:
+            body_text = "HTML email body included."
     if not body_text and not body_html:
         raise ValueError("text or html body is required")
     if body_text:
@@ -493,6 +496,13 @@ async def send_email(
     Omit from_local to use the configured owner sender.
     To attach files, pass attachment_paths for local files or attachments as
     objects with path, or filename plus base64 content.
+    If you send an HTML body, always include text as a plain-text fallback; if
+    text is omitted, the bridge will generate a fallback from the HTML. To
+    display an image inside the email body instead of as a normal attachment,
+    send an HTML body with an <img src="cid:some_id"> tag and pass the image
+    through attachments as an object with path or base64 content, content_type,
+    and content_id="some_id". Use attachment_paths only for normal attachments,
+    not inline images.
     """
     _require_user_chat_context()
     draft_id = str(draft_id or "").strip()

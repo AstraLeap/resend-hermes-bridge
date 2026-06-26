@@ -81,6 +81,7 @@ from services.resend_outbound import (  # noqa: F401
     outbound_attachment_audit_metadata,
     outbound_payload_for_audit,
     reply_attachment_specs_from_decision,
+    reply_html_from_decision,
     reply_text_from_decision,
     send_resend_email,
     send_resend_reply,

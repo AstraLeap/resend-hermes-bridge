@@ -11,6 +11,9 @@ from utils.i18n_strings import EmailLabels, MailboxLabels, NotificationTitles, P
 HTML_BREAK_RE = re.compile(r"(?i)<\s*(br|/p|/div|/li|/tr)\b[^>]*>")
 HTML_SCRIPT_STYLE_RE = re.compile(r"(?is)<\s*(script|style)\b.*?<\s*/\s*\1\s*>")
 HTML_TAG_RE = re.compile(r"<[^>]+>")
+HTML_IMG_CID_RE = re.compile(
+    r"""(?is)<\s*img\b[^>]*\bsrc\s*=\s*(["']?)cid:([^"'\s>]+)\1[^>]*>"""
+)
 
 
 def quote_block(text: str) -> str:
@@ -81,6 +84,50 @@ def html_to_display_text(value: str) -> str:
     return "\n".join(lines).strip()
 
 
+def html_to_outbound_display_text(
+    value: str,
+    *,
+    attachments: Any = None,
+) -> str:
+    cid_names = attachment_names_by_content_id(attachments)
+
+    def replace_inline_image(match: re.Match[str]) -> str:
+        content_id = unescape(match.group(2).strip())
+        marker = f"{EmailLabels.INLINE_IMAGE}: cid:{content_id}"
+        filename = cid_names.get(content_id)
+        if filename:
+            marker += f" -> {filename}"
+        return f"\n[{marker}]\n"
+
+    html = HTML_IMG_CID_RE.sub(replace_inline_image, str(value or ""))
+    return html_to_display_text(html)
+
+
+def attachment_dicts(value: Any) -> list[dict[str, Any]]:
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def attachment_inline_name(attachment: dict[str, Any]) -> str:
+    filename = str(attachment.get("filename") or attachment.get("id") or "").strip()
+    path = str(attachment.get("path") or attachment.get("local_path") or "").strip()
+    if not filename and path:
+        filename = Path(path).name
+    return filename or "attachment"
+
+
+def attachment_names_by_content_id(value: Any) -> dict[str, str]:
+    names: dict[str, str] = {}
+    for attachment in attachment_dicts(value):
+        content_id = str(attachment.get("content_id") or "").strip()
+        if content_id and content_id not in names:
+            names[content_id] = attachment_inline_name(attachment)
+    return names
+
+
 def format_sender(payload: dict[str, Any], *, domain: str) -> str:
     explicit = str(payload.get("from") or payload.get("from_email") or "").strip()
     if explicit:
@@ -121,10 +168,21 @@ def email_display_rows(
     return rows
 
 
-def email_body_block(payload: dict[str, Any], *, body_limit: int | None = None) -> tuple[str, str]:
+def email_body_block(
+    payload: dict[str, Any],
+    *,
+    body_limit: int | None = None,
+    prefer_html: bool = False,
+) -> tuple[str, str]:
     text = str(payload.get("text") or "").strip()
     html = str(payload.get("html") or "").strip()
-    if text:
+    if prefer_html and html:
+        label = EmailLabels.HTML_BODY
+        body = (
+            html_to_outbound_display_text(html, attachments=payload.get("attachments"))
+            or EmailLabels.EMPTY_BODY
+        )
+    elif text:
         label = EmailLabels.BODY
         body = text
     elif html:
@@ -177,21 +235,44 @@ def render_attachments_markdown(
 def attachment_display_name(attachment: dict[str, Any]) -> str:
     filename = str(attachment.get("filename") or attachment.get("id") or "").strip()
     path = str(attachment.get("path") or attachment.get("local_path") or "").strip()
+    content_id = str(attachment.get("content_id") or "").strip()
     if not filename and path:
         filename = Path(path).name
-    if path:
-        return f"{filename or 'attachment'} ({path})"
-    return filename or "attachment"
+    inline_suffix = ""
+    if content_id:
+        stem = Path(filename).stem if filename else ""
+        if stem == content_id or filename == content_id:
+            inline_suffix = f" [{EmailLabels.INLINE_IMAGE}]"
+        else:
+            inline_suffix = f" [{EmailLabels.INLINE_IMAGE}: cid:{content_id}]"
+    return f"{filename or 'attachment'}{inline_suffix}"
+
+
+def _format_size(bytes_value: int) -> str:
+    if bytes_value < 1024:
+        return f"{bytes_value} B"
+    kb = bytes_value / 1024
+    if kb < 1024:
+        if kb >= 10:
+            return f"{int(round(kb))} KB"
+        return f"{kb:.1f} KB"
+    mb = kb / 1024
+    if mb >= 10:
+        return f"{int(round(mb))} MB"
+    return f"{mb:.1f} MB"
 
 
 def attachment_display_size(attachment: dict[str, Any]) -> str:
     size = attachment.get("size")
     if size not in (None, ""):
-        return str(size)
+        try:
+            return _format_size(int(size))
+        except (ValueError, TypeError):
+            pass
     path = str(attachment.get("path") or attachment.get("local_path") or "").strip()
     if path:
         try:
-            return str(Path(path).expanduser().stat().st_size)
+            return _format_size(Path(path).expanduser().stat().st_size)
         except OSError:
             pass
     content = str(attachment.get("content") or "").strip()
@@ -199,7 +280,7 @@ def attachment_display_size(attachment: dict[str, Any]) -> str:
         compact = re.sub(r"\s+", "", content)
         padding = len(compact) - len(compact.rstrip("="))
         decoded_size = max((len(compact) * 3) // 4 - padding, 0)
-        return str(decoded_size)
+        return _format_size(decoded_size)
     return "unknown size"
 
 
@@ -215,6 +296,7 @@ def render_email_markdown(
     body_limit: int | None = None,
     notice_limit: int | None = None,
     show_attachments: bool = True,
+    prefer_html_body: bool = False,
 ) -> str:
     lines: list[str] = []
     if title:
@@ -230,7 +312,11 @@ def render_email_markdown(
     ]
     lines.extend(render_markdown_table([EmailLabels.FIELD, EmailLabels.CONTENT], rows))
 
-    body_label, body = email_body_block(payload, body_limit=body_limit)
+    body_label, body = email_body_block(
+        payload,
+        body_limit=body_limit,
+        prefer_html=prefer_html_body,
+    )
     body = decode_html_entities(body).replace("```", "'''")
     lines.extend(
         [
@@ -267,6 +353,7 @@ def render_draft_markdown(
         draft_id=draft_id,
         footer=footer,
         show_attachments=show_attachments,
+        prefer_html_body=True,
     )
 
 
@@ -312,6 +399,7 @@ def render_processing_result_notice(
     decision: dict[str, Any] | None = None,
     *,
     domain: str,
+    ai_name: str = "Hermes",
     reply_payload: dict[str, Any] | None = None,
     reply_id: str | None = None,
     notice_limit: int = 3800,
@@ -321,11 +409,12 @@ def render_processing_result_notice(
         footer = ProcessingMessages.REPLY_FOOTER.format(reply_id=reply_id) if reply_id else None
         notice = render_email_markdown(
             reply_payload,
-            title=NotificationTitles.AUTO_REPLY_SENT,
+            title=NotificationTitles.AUTO_REPLY_SENT.format(ai_name=ai_name),
             domain=domain,
             footer=footer,
             notice_limit=notice_limit,
             show_attachments=show_attachments,
+            prefer_html_body=True,
         )
         return notice
 

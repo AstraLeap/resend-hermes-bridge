@@ -291,6 +291,7 @@ async def send_email_display_notification(
     body_limit: int | None = None,
     notice_limit: int | None = 3800,
     show_attachments: bool = True,
+    prefer_html_body: bool = False,
 ) -> str:
     """Render one email display with the standard template, then send it."""
     bridge_app = _bridge_app()
@@ -305,6 +306,7 @@ async def send_email_display_notification(
         body_limit=body_limit,
         notice_limit=notice_limit,
         show_attachments=show_attachments,
+        prefer_html_body=prefer_html_body,
     )
     send_kwargs: dict[str, Any] = {
         "email_id": email_id,

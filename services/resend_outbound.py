@@ -18,6 +18,7 @@ from utils.email_core import (
     ensure_list,
     outbound_recipient_summary,
 )
+from utils.email_display import html_to_display_text
 from utils.i18n_strings import McpMessages, ReplyMessages
 
 
@@ -85,6 +86,7 @@ class HermesDecision(BaseModel):
     owner_report_attachments: list[Any] = Field(default_factory=list)
     reply_subject: str = ""
     reply_text: str = ""
+    reply_html: str = ""
     reply_attachments: list[Any] = Field(default_factory=list)
 
 
@@ -390,9 +392,14 @@ def build_resend_reply_payload(
         "from_local": bridge_app.SETTINGS.bot_from_local,
         "to": [sender],
         "subject": subject,
-        "text": reply_text_from_decision(decision),
         "headers": headers,
     }
+    reply_text = reply_text_from_decision(decision)
+    reply_html = reply_html_from_decision(decision)
+    if reply_text:
+        payload["text"] = reply_text
+    if reply_html:
+        payload["html"] = reply_html
     attachments = reply_attachment_specs_from_decision(decision)
     if attachments:
         payload["attachments"] = attachments
@@ -400,7 +407,17 @@ def build_resend_reply_payload(
 
 
 def reply_text_from_decision(decision: dict[str, Any]) -> str:
-    return str(decision.get("reply_text") or decision.get("owner_report") or "").strip()
+    reply_text = str(decision.get("reply_text") or "").strip()
+    if reply_text:
+        return reply_text
+    reply_html = reply_html_from_decision(decision)
+    if reply_html:
+        return html_to_display_text(reply_html)
+    return str(decision.get("owner_report") or "").strip()
+
+
+def reply_html_from_decision(decision: dict[str, Any]) -> str:
+    return str(decision.get("reply_html") or "").strip()
 
 
 def reply_attachment_specs_from_decision(
@@ -472,7 +489,11 @@ def reply_attachment_specs_from_decision(
         selected.append(spec)
         seen_paths.add(key)
 
-    def add_downloaded(item: dict[str, Any]) -> None:
+    def add_downloaded(
+        item: dict[str, Any],
+        *,
+        content_id: str = "",
+    ) -> None:
         path = str(item.get("local_path") or "")
         if not path or path in seen_paths:
             return
@@ -484,6 +505,8 @@ def reply_attachment_specs_from_decision(
             spec["filename"] = str(item["filename"])
         if item.get("content_type"):
             spec["content_type"] = str(item["content_type"])
+        if content_id:
+            spec["content_id"] = content_id
         selected.append(spec)
         seen_paths.add(path)
 
@@ -500,7 +523,10 @@ def reply_attachment_specs_from_decision(
                 or by_id.get(attachment_id)
             )
             if matched:
-                add_downloaded(matched)
+                add_downloaded(
+                    matched,
+                    content_id=str(request.get("content_id") or ""),
+                )
                 continue
             if path and path not in seen_paths:
                 add_generated_path(

@@ -107,8 +107,8 @@ async def show_draft(request: Request) -> dict[str, Any]:
         domain=bridge_app.SETTINGS.resend_domain,
         draft_id=draft_id,
         footer=footer,
-        show_attachments=False,
         notice_limit=3800,
         target=target,
+        prefer_html_body=True,
     )
     return {"ok": True}

@@ -11,6 +11,7 @@ import services.resend_client as resend_client
 from services.hermes_client import run_hermes_email_task
 from services.resend_outbound import (
     build_resend_reply_payload,
+    reply_html_from_decision,
     reply_text_from_decision,
     send_resend_reply,
 )
@@ -373,7 +374,9 @@ async def handle_hermes_decision(
     action = str(decision.get("action", "notify")).lower()
     reply_payload: dict[str, Any] | None = None
     reply_id: str | None = None
-    if action == "reply" and not reply_text_from_decision(decision):
+    if action == "reply" and not (
+        reply_text_from_decision(decision) or reply_html_from_decision(decision)
+    ):
         decision["action"] = "notify"
         decision["owner_report"] = (
             str(decision.get("owner_report") or "").strip()
@@ -392,10 +395,13 @@ async def handle_hermes_decision(
         footer = ProcessingMessages.REPLY_FOOTER.format(reply_id=reply_id) if reply_id else None
         await bridge_app.send_email_display_notification(
             reply_payload,
-            title=NotificationTitles.AUTO_REPLY_SENT,
+            title=NotificationTitles.AUTO_REPLY_SENT.format(
+                ai_name=bridge_app.SETTINGS.ai_name
+            ),
             domain=bridge_app.SETTINGS.resend_domain,
             footer=footer,
             email_id=email_id,
+            prefer_html_body=True,
         )
         bridge_app.update_inbound_status(email_id, bridge_app.InboundStatus.REPLIED)
     else:
