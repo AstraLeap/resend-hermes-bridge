@@ -335,7 +335,7 @@ def test_qqbot_notification_target_uses_markdown_table_template(monkeypatch):
     assert "| To | owner@example.com |" in messages[0]
     assert "**邮件信息**" not in messages[0]
     assert "**正文**" in messages[0]
-    assert "\n---\n\nBody\n\n---\n" in messages[0]
+    assert "\n**正文**\n\n> Body\n" in messages[0]
     assert "```text" not in messages[0]
     assert "**附件**" in messages[0]
     assert "| report.pdf | 12 |" in messages[0]
@@ -672,7 +672,7 @@ def test_email_notice_decodes_html_entities_in_text_body():
         domain="example.com",
     )
 
-    assert "\n---\n\nA > B\nC < D\n\n---" in notice
+    assert "> A > B\n> C < D" in notice
     assert "A &gt; B\nC &lt; D" not in notice
     assert "| Subject | A > B |" in notice
 
@@ -689,7 +689,7 @@ def test_email_notice_decodes_html_entities_in_html_body():
         domain="example.com",
     )
 
-    assert "\n---\n\nA > B\nC < D\n\n---" in notice
+    assert "> A > B\n> C < D" in notice
 
 
 def test_email_notice_renders_body_as_wrapping_markdown_text():
@@ -705,7 +705,7 @@ def test_email_notice_renders_body_as_wrapping_markdown_text():
         domain="example.com",
     )
 
-    assert f"\n---\n\n{long_line.strip()}\n\n---" in notice
+    assert f"> {long_line.strip()}" in notice
     assert "```text" not in notice
 
 
@@ -756,7 +756,7 @@ def test_send_email_display_notification_renders_markdown_and_forwards_target(mo
     assert "| 字段 | 内容 |" in notice
     assert "| Draft ID | draft-1 |" in notice
     assert "| To | recipient@example.com |" in notice
-    assert "\n---\n\nHi\n\n---\n" in notice
+    assert "\n**正文**\n\n> Hi\n" in notice
     assert "```text" not in notice
     assert "确认后发送。" in notice
     assert captured["email_id"] is None
@@ -1837,7 +1837,7 @@ def test_show_draft_endpoint_uses_markdown_table_template_for_qqbot(monkeypatch,
     assert "| Draft ID | draft-1 |" in captured["message"]
     assert "| To | recipient@example.com |" in captured["message"]
     assert "**邮件信息**" not in captured["message"]
-    assert "\n---\n\nHi\n\n---\n" in captured["message"]
+    assert "\n**正文**\n\n> Hi\n" in captured["message"]
     assert "```text" not in captured["message"]
     assert captured["target"] == "qqbot:dm:user-1"
 

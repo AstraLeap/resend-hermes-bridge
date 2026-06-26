@@ -9,7 +9,17 @@ from typing import Any
 HTML_BREAK_RE = re.compile(r"(?i)<\s*(br|/p|/div|/li|/tr)\b[^>]*>")
 HTML_SCRIPT_STYLE_RE = re.compile(r"(?is)<\s*(script|style)\b.*?<\s*/\s*\1\s*>")
 HTML_TAG_RE = re.compile(r"<[^>]+>")
-BODY_SEPARATOR = "---"
+
+
+def quote_block(text: str) -> str:
+    """Render text as a markdown blockquote, preserving blank lines."""
+    lines: list[str] = []
+    for raw_line in text.splitlines():
+        if raw_line.strip():
+            lines.append(f"> {raw_line}")
+        else:
+            lines.append(">")
+    return "\n".join(lines)
 
 
 def as_list(value: Any) -> list[str]:
@@ -216,11 +226,7 @@ def render_email_markdown(
             "",
             f"**{body_label}**",
             "",
-            BODY_SEPARATOR,
-            "",
-            body,
-            "",
-            BODY_SEPARATOR,
+            quote_block(body),
         ]
     )
     if show_attachments:
