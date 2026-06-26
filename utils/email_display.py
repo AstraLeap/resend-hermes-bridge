@@ -9,6 +9,7 @@ from typing import Any
 HTML_BREAK_RE = re.compile(r"(?i)<\s*(br|/p|/div|/li|/tr)\b[^>]*>")
 HTML_SCRIPT_STYLE_RE = re.compile(r"(?is)<\s*(script|style)\b.*?<\s*/\s*\1\s*>")
 HTML_TAG_RE = re.compile(r"<[^>]+>")
+BODY_SEPARATOR = "---"
 
 
 def as_list(value: Any) -> list[str]:
@@ -215,7 +216,11 @@ def render_email_markdown(
             "",
             f"**{body_label}**",
             "",
+            BODY_SEPARATOR,
+            "",
             body,
+            "",
+            BODY_SEPARATOR,
         ]
     )
     if show_attachments:
