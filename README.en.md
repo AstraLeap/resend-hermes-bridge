@@ -72,18 +72,7 @@ https://your-domain.example/your-resend-endpoint
     -> http://127.0.0.1:8765/webhooks/resend
 ```
 
-Example:
-
-```nginx
-location /your-resend-endpoint {
-    proxy_pass http://127.0.0.1:8765/webhooks/resend;
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}
-```
-
-If you changed `RESEND_BRIDGE_PORT` in `.env`, update `8765` in the Nginx example accordingly.
+If you changed `RESEND_BRIDGE_PORT` in `.env`, update `8765` in the mapping above accordingly.
 
 Do not expose `/send`, `/show-draft`, or `/health` to the public internet.
 
@@ -95,19 +84,6 @@ cd resend-hermes-bridge
 ./scripts/install.sh
 ```
 
-The install script will:
-
-- Check for the Hermes CLI and `~/.hermes/config.yaml`; exit if Hermes is not configured.
-- Check for systemd; the service is installed as a systemd user service.
-- Check the Python version; Python 3.11 or later is required.
-- Create `.venv` and install runtime dependencies.
-- Create `.env` from `.env.example` and interactively fill in common configuration.
-- Interactively set the local listener port, written to `RESEND_BRIDGE_PORT`; defaults to `8765` if left blank.
-- Optionally set a `BOT_SENDER_ALLOWLIST`; when blank, all senders are allowed to trigger the bot.
-- Install and start the systemd user service.
-- Register the MCP server in Hermes `config.yaml`.
-- Choose the bridge language (`BRIDGE_LANGUAGE`), Chinese or English; defaults to Chinese.
-
 Check the service:
 
 ```sh
@@ -117,22 +93,11 @@ curl http://127.0.0.1:8765/health
 
 If you used a custom port, replace `8765` above with `RESEND_BRIDGE_PORT` from `.env`.
 
-Automation rules:
-
-- Mail sent to `BOT_FROM_LOCAL@RESEND_DOMAIN` is only handed to Hermes when the sender is in `BOT_SENDER_ALLOWLIST`.
-- An empty `BOT_SENDER_ALLOWLIST` means no sender restriction.
-- The allowlist is comma-separated, e.g. `alice@example.com,bob@example.com`.
-- Mail that does not meet the automation rules is only forwarded to the owner and is not processed by the bot.
-
-If a Hermes session is already open, run `/reload-mcp` to reload the MCP tools.
-
 Uninstall:
 
 ```sh
 ./scripts/uninstall.sh
 ```
-
-The uninstall script stops and removes the systemd user service, and optionally removes the MCP config, `.venv`, `.env`, and Python caches. Runtime data under `data/` is kept by default.
 
 ## Manual install
 
