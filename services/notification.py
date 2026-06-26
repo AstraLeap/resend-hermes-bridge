@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from typing import Any
 
 from db.state import OutboundStatus, StepStatus
-from services.hermes_context import append_notification_to_user_context
+from services.hermes_context import append_notification_to_user_context, parse_notification_target
 from utils.email_display import render_email_markdown
 
 
@@ -14,13 +16,166 @@ def _bridge_app():
     return bridge_app
 
 
+# This script is executed inside the Hermes virtualenv so it can import and call
+# plugins.platforms.telegram.adapter.TelegramAdapter.send() directly.  It is a
+# thin caller: all Telegram-specific sending logic stays in Hermes code.
+_TELEGRAM_ADAPTER_SCRIPT = '''
+import asyncio, json, os, sys
+
+try:
+    payload = json.load(sys.stdin)
+except Exception as exc:
+    print(json.dumps({"error": f"bad input: {exc}"}), flush=True)
+    os._exit(1)
+
+message = payload.get("message", "")
+chat_id = payload.get("chat_id") or ""
+thread_id = payload.get("thread_id") or ""
+hermes_home = payload.get("hermes_home") or os.path.expanduser("~/.hermes")
+
+sys.path.insert(0, os.path.join(hermes_home, "hermes-agent"))
+
+async def _send():
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(hermes_home, ".env"), override=True)
+
+    from gateway.config import load_gateway_config, Platform
+    from plugins.platforms.telegram.adapter import TelegramAdapter
+    from telegram import Bot
+    from telegram.request import HTTPXRequest
+    from gateway.platforms.base import resolve_proxy_url
+
+    cfg = load_gateway_config()
+    pconfig = cfg.platforms.get(Platform.TELEGRAM)
+    if not pconfig or not pconfig.token:
+        return {"error": "Telegram platform is not configured with a token"}
+
+    if not chat_id:
+        home = cfg.get_home_channel(Platform.TELEGRAM)
+        if not home:
+            return {"error": "No chat_id provided and no Telegram home channel configured"}
+        _chat_id = home.chat_id
+        _thread_id = thread_id or home.thread_id
+    else:
+        _chat_id = chat_id
+        _thread_id = thread_id
+
+    bot_kwargs = {}
+    extra = pconfig.extra or {}
+    base_url = extra.get("base_url")
+    if base_url:
+        bot_kwargs["base_url"] = base_url
+        bot_kwargs["base_file_url"] = extra.get("base_file_url", base_url)
+    if extra.get("local_mode"):
+        bot_kwargs["local_mode"] = True
+
+    proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=["api.telegram.org"])
+    if proxy_url:
+        bot_kwargs["request"] = HTTPXRequest(proxy=proxy_url)
+
+    bot = Bot(pconfig.token, **bot_kwargs)
+    adapter = TelegramAdapter(pconfig)
+    adapter._bot = bot
+
+    metadata = {"notify": True}
+    if _thread_id:
+        metadata["thread_id"] = str(_thread_id)
+
+    result = await adapter.send(str(_chat_id), message, metadata=metadata)
+    if not result.success:
+        return {
+            "error": result.error or "Telegram adapter send failed",
+            "retryable": bool(getattr(result, "retryable", False)),
+        }
+    return {"success": True, "message_id": result.message_id}
+
+try:
+    print(json.dumps(asyncio.run(_send())), flush=True)
+except Exception as exc:
+    print(json.dumps({"error": str(exc)}), flush=True)
+os._exit(0)
+'''
+
+
+def _is_telegram_target(target: str) -> bool:
+    return parse_notification_target(target).platform == "telegram"
+
+
+async def _send_telegram_adapter_notification(
+    target: str,
+    message: str,
+    *,
+    hermes_home: Path,
+    hermes_venv_python_bin: Path,
+    timeout: float = 90,
+) -> tuple[str, str]:
+    """Send a Telegram notification by calling Hermes's TelegramAdapter.
+
+    The actual adapter code runs inside the Hermes virtualenv subprocess so
+    that the bridge does not need to duplicate python-telegram-bot or adapter
+    dependencies.
+    """
+    parsed = parse_notification_target(target)
+    payload = {
+        "message": message,
+        "chat_id": parsed.chat_id or "",
+        "thread_id": parsed.thread_id or "",
+        "hermes_home": str(hermes_home),
+    }
+
+    if not hermes_venv_python_bin.exists():
+        raise RuntimeError(
+            f"Hermes virtualenv Python not found: {hermes_venv_python_bin}"
+        )
+
+    process = await asyncio.create_subprocess_exec(
+        str(hermes_venv_python_bin),
+        "-c",
+        _TELEGRAM_ADAPTER_SCRIPT,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    input_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    stdout, stderr = await _communicate_or_kill(
+        process,
+        input=input_bytes,
+        timeout=timeout,
+    )
+    stdout_text = stdout.decode(errors="replace")
+    stderr_text = stderr.decode(errors="replace")
+
+    if process.returncode != 0:
+        raise RuntimeError(
+            f"telegram adapter send failed (exit {process.returncode}): "
+            f"stdout={stdout_text} stderr={stderr_text}"
+        )
+
+    last_line = stdout_text.strip().splitlines()[-1] if stdout_text.strip() else ""
+    try:
+        result = json.loads(last_line)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"telegram adapter returned unexpected output: "
+            f"stdout={stdout_text} stderr={stderr_text}"
+        ) from exc
+
+    if result.get("error"):
+        raise RuntimeError(
+            f"telegram adapter send failed: {result['error']} "
+            f"stdout={stdout_text} stderr={stderr_text}"
+        )
+    return stdout_text, stderr_text
+
+
 async def _communicate_or_kill(
     process: asyncio.subprocess.Process,
     *,
+    input: bytes | None = None,
     timeout: float,
 ) -> tuple[bytes, bytes]:
     try:
-        return await asyncio.wait_for(process.communicate(), timeout=timeout)
+        return await asyncio.wait_for(process.communicate(input=input), timeout=timeout)
     except TimeoutError:
         try:
             process.kill()
@@ -171,16 +326,25 @@ async def send_notification(
     bridge_app = _bridge_app()
     attachment_paths = attachment_paths or []
     target = str(target or bridge_app.SETTINGS.notification_target).strip()
-    payload = {
-        "command": [
-            str(bridge_app.SETTINGS.hermes_send_bin),
-            "send",
-            "--to",
-            target,
-            message,
-        ],
-        "attachment_paths": attachment_paths,
-    }
+
+    if _is_telegram_target(target):
+        payload: dict[str, Any] = {
+            "mode": "telegram_adapter",
+            "target": target,
+            "attachment_paths": attachment_paths,
+        }
+    else:
+        payload = {
+            "command": [
+                str(bridge_app.SETTINGS.hermes_send_bin),
+                "send",
+                "--to",
+                target,
+                message,
+            ],
+            "attachment_paths": attachment_paths,
+        }
+
     outbound_id = bridge_app.create_outbound_message(
         kind=f"{target}_notification",
         email_id=email_id,
@@ -192,7 +356,15 @@ async def send_notification(
     stderr_text = ""
     context_records: list[dict[str, object]] = []
     try:
-        stdout, stderr = await send_hermes_notification_text(target, message)
+        if _is_telegram_target(target):
+            stdout, stderr = await _send_telegram_adapter_notification(
+                target,
+                message,
+                hermes_home=bridge_app.SETTINGS.hermes_home,
+                hermes_venv_python_bin=bridge_app.SETTINGS.hermes_venv_python_bin,
+            )
+        else:
+            stdout, stderr = await send_hermes_notification_text(target, message)
         stdout_text += stdout
         stderr_text += stderr
 

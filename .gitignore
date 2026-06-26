@@ -24,6 +24,10 @@ data/
 .pytest_cache/
 .ruff_cache/
 
+# Local agent/tool state
+.codex/
+.agents/
+
 AGENTS.md
 
 # Runtime MCP draft files (legacy root location)

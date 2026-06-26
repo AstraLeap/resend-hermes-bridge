@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,6 +33,36 @@ def hermes_send_bin() -> Path:
     if hermes_home_bin.exists():
         return hermes_home_bin
     return Path("/usr/local/bin/hermes")
+
+
+def hermes_venv_python_bin() -> Path:
+    """Return the Python interpreter inside the Hermes virtualenv.
+
+    Used when the bridge needs to call Hermes-internal modules (e.g. the
+    Telegram adapter) directly without copying their logic.
+    """
+    env_override = os.getenv("HERMES_VENV_PYTHON_BIN", "").strip()
+    if env_override:
+        return Path(env_override).expanduser()
+
+    send_bin = hermes_send_bin()
+    # If hermes itself lives inside a venv bin dir, the Python interpreter is
+    # the sibling binary.
+    if send_bin.parent.name == "bin":
+        maybe_venv = send_bin.parent.parent
+        if (maybe_venv / "pyvenv.cfg").exists():
+            return send_bin.parent / "python"
+
+    # If hermes is a wrapper script, follow it to the real venv binary.
+    if send_bin.exists():
+        text = send_bin.read_text(encoding="utf-8", errors="ignore")
+        match = re.search(r'exec\s+"([^"]+)"', text)
+        if match:
+            resolved = Path(match.group(1)).expanduser()
+            if (resolved.parent.parent / "pyvenv.cfg").exists():
+                return resolved.parent / "python"
+
+    return hermes_home() / "hermes-agent" / "venv" / "bin" / "python"
 
 
 def hermes_home() -> Path:
@@ -83,6 +114,7 @@ class Settings:
     bot_from_local: str
     owner_from_local: str
     hermes_send_bin: Path
+    hermes_venv_python_bin: Path
     bridge_db: Path
     attachment_dir: Path
     mcp_drafts_file: Path
@@ -110,6 +142,10 @@ class Settings:
     def owner_address(self) -> str:
         return f"{self.owner_from_local}@{self.resend_domain}"
 
+    @property
+    def hermes_home(self) -> Path:
+        return hermes_home()
+
 
 def load_settings() -> Settings:
     load_project_env()
@@ -128,6 +164,7 @@ def load_settings() -> Settings:
         bot_from_local=require_env("BOT_FROM_LOCAL").lower(),
         owner_from_local=require_env("OWNER_FROM_LOCAL").lower(),
         hermes_send_bin=hermes_send_bin(),
+        hermes_venv_python_bin=hermes_venv_python_bin(),
         bridge_db=data_dir / "state.db",
         attachment_dir=data_dir / "attachments",
         mcp_drafts_file=data_dir / "mcp_email_drafts.json",

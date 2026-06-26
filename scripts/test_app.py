@@ -528,8 +528,9 @@ def test_expired_bot_reply_context_is_rejected_and_removed(monkeypatch, tmp_path
     assert not path.exists()
 
 
-def test_send_notification_uses_hermes_send_by_default(monkeypatch, tmp_path):
+def test_send_notification_uses_telegram_adapter_by_default(monkeypatch, tmp_path):
     commands = []
+    inputs = []
     updates = []
     steps = []
     context_calls = []
@@ -537,12 +538,16 @@ def test_send_notification_uses_hermes_send_by_default(monkeypatch, tmp_path):
     hermes_bin = tmp_path / "hermes"
     hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
     hermes_bin.chmod(0o755)
+    fake_python = tmp_path / "python"
+    fake_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake_python.chmod(0o755)
 
     class FakeProcess:
         returncode = 0
 
-        async def communicate(self):
-            return b"sent\n", b""
+        async def communicate(self, input=None):
+            inputs.append(input)
+            return b'{"success": true, "message_id": 123}\n', b""
 
     async def fake_create_subprocess_exec(*args, **kwargs):
         commands.append(args)
@@ -554,7 +559,12 @@ def test_send_notification_uses_hermes_send_by_default(monkeypatch, tmp_path):
     monkeypatch.setattr(
         app,
         "SETTINGS",
-        replace(app.SETTINGS, notification_target="telegram", hermes_send_bin=hermes_bin),
+        replace(
+            app.SETTINGS,
+            notification_target="telegram",
+            hermes_send_bin=hermes_bin,
+            hermes_venv_python_bin=fake_python,
+        ),
     )
     monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 99)
     monkeypatch.setattr(
@@ -590,7 +600,14 @@ def test_send_notification_uses_hermes_send_by_default(monkeypatch, tmp_path):
         message,
         kind="text",
     )
-    assert commands == [(str(hermes_bin), "send", "--to", "telegram", message)]
+    assert len(commands) == 1
+    assert commands[0][0] == str(fake_python)
+    assert commands[0][1] == "-c"
+    assert commands[0][2] == notification_service._TELEGRAM_ADAPTER_SCRIPT
+    payload = json.loads(inputs[0].decode("utf-8"))
+    assert payload["message"] == message
+    assert payload["chat_id"] == ""
+    assert payload["thread_id"] == ""
     assert context_calls == [("telegram", context_message)]
     assert updates[-1][0] == 99
     assert updates[-1][1]["status"] == app.OutboundStatus.SENT
@@ -759,7 +776,7 @@ def test_send_notification_uses_hermes_send_for_non_telegram(monkeypatch, tmp_pa
     class FakeProcess:
         returncode = 0
 
-        async def communicate(self):
+        async def communicate(self, input=None):
             return b"sent\n", b""
 
     async def fake_create_subprocess_exec(*args, **kwargs):
@@ -812,12 +829,15 @@ def test_send_notification_does_not_fail_when_context_recording_fails(monkeypatc
     hermes_bin = tmp_path / "hermes"
     hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
     hermes_bin.chmod(0o755)
+    fake_python = tmp_path / "python"
+    fake_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake_python.chmod(0o755)
 
     class FakeProcess:
         returncode = 0
 
-        async def communicate(self):
-            return b"sent\n", b""
+        async def communicate(self, input=None):
+            return b'{"success": true, "message_id": 123}\n', b""
 
     async def fake_create_subprocess_exec(*args, **kwargs):
         commands.append(args)
@@ -832,7 +852,12 @@ def test_send_notification_does_not_fail_when_context_recording_fails(monkeypatc
     monkeypatch.setattr(
         app,
         "SETTINGS",
-        replace(app.SETTINGS, notification_target="telegram", hermes_send_bin=hermes_bin),
+        replace(
+            app.SETTINGS,
+            notification_target="telegram",
+            hermes_send_bin=hermes_bin,
+            hermes_venv_python_bin=fake_python,
+        ),
     )
     monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 100)
     monkeypatch.setattr(
@@ -853,7 +878,10 @@ def test_send_notification_does_not_fail_when_context_recording_fails(monkeypatc
 
     asyncio.run(app.send_notification(message, email_id="email-2"))
 
-    assert commands == [(str(hermes_bin), "send", "--to", "telegram", message)]
+    assert len(commands) == 1
+    assert commands[0][0] == str(fake_python)
+    assert commands[0][1] == "-c"
+    assert commands[0][2] == notification_service._TELEGRAM_ADAPTER_SCRIPT
     assert updates[-1][0] == 100
     assert updates[-1][1]["status"] == app.OutboundStatus.SENT
     assert steps[0]["step"] == "telegram_context"
@@ -872,6 +900,9 @@ def test_send_notification_records_context_before_media_failure(monkeypatch, tmp
     hermes_bin = tmp_path / "hermes"
     hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
     hermes_bin.chmod(0o755)
+    fake_python = tmp_path / "python"
+    fake_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake_python.chmod(0o755)
 
     class FakeProcess:
         def __init__(self, returncode, stdout=b"", stderr=b""):
@@ -879,14 +910,14 @@ def test_send_notification_records_context_before_media_failure(monkeypatch, tmp
             self._stdout = stdout
             self._stderr = stderr
 
-        async def communicate(self):
+        async def communicate(self, input=None):
             return self._stdout, self._stderr
 
     async def fake_create_subprocess_exec(*args, **kwargs):
         commands.append(args)
         if args[-1].startswith("MEDIA:"):
             return FakeProcess(1, stderr=b"media failed")
-        return FakeProcess(0, stdout=b"sent\n")
+        return FakeProcess(0, stdout=b'{"success": true, "message_id": 123}\n')
 
     def fake_append_notification_to_user_context(target, body):
         context_calls.append((target, body))
@@ -902,7 +933,12 @@ def test_send_notification_records_context_before_media_failure(monkeypatch, tmp
     monkeypatch.setattr(
         app,
         "SETTINGS",
-        replace(app.SETTINGS, notification_target="telegram", hermes_send_bin=hermes_bin),
+        replace(
+            app.SETTINGS,
+            notification_target="telegram",
+            hermes_send_bin=hermes_bin,
+            hermes_venv_python_bin=fake_python,
+        ),
     )
     monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 101)
     monkeypatch.setattr(
@@ -930,10 +966,11 @@ def test_send_notification_records_context_before_media_failure(monkeypatch, tmp
             )
         )
 
-    assert commands == [
-        (str(hermes_bin), "send", "--to", "telegram", message),
-        (str(hermes_bin), "send", "--to", "telegram", f"MEDIA:{attachment_path}"),
-    ]
+    assert len(commands) == 2
+    assert commands[0][0] == str(fake_python)
+    assert commands[0][1] == "-c"
+    assert commands[0][2] == notification_service._TELEGRAM_ADAPTER_SCRIPT
+    assert commands[1] == (str(hermes_bin), "send", "--to", "telegram", f"MEDIA:{attachment_path}")
     assert context_calls == [
         (
             "telegram",
@@ -963,12 +1000,15 @@ def test_send_notification_records_successful_media_in_context(monkeypatch, tmp_
     hermes_bin = tmp_path / "hermes"
     hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
     hermes_bin.chmod(0o755)
+    fake_python = tmp_path / "python"
+    fake_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake_python.chmod(0o755)
 
     class FakeProcess:
         returncode = 0
 
-        async def communicate(self):
-            return b"sent\n", b""
+        async def communicate(self, input=None):
+            return b'{"success": true, "message_id": 123}\n', b""
 
     async def fake_create_subprocess_exec(*args, **kwargs):
         commands.append(args)
@@ -988,7 +1028,12 @@ def test_send_notification_records_successful_media_in_context(monkeypatch, tmp_
     monkeypatch.setattr(
         app,
         "SETTINGS",
-        replace(app.SETTINGS, notification_target="telegram", hermes_send_bin=hermes_bin),
+        replace(
+            app.SETTINGS,
+            notification_target="telegram",
+            hermes_send_bin=hermes_bin,
+            hermes_venv_python_bin=fake_python,
+        ),
     )
     monkeypatch.setattr(app, "create_outbound_message", lambda **_kwargs: 102)
     monkeypatch.setattr(
@@ -1016,10 +1061,11 @@ def test_send_notification_records_successful_media_in_context(monkeypatch, tmp_
     )
 
     media_message = f"MEDIA:{attachment_path}"
-    assert commands == [
-        (str(hermes_bin), "send", "--to", "telegram", message),
-        (str(hermes_bin), "send", "--to", "telegram", media_message),
-    ]
+    assert len(commands) == 2
+    assert commands[0][0] == str(fake_python)
+    assert commands[0][1] == "-c"
+    assert commands[0][2] == notification_service._TELEGRAM_ADAPTER_SCRIPT
+    assert commands[1] == (str(hermes_bin), "send", "--to", "telegram", media_message)
     assert context_calls == [
         (
             "telegram",
@@ -1193,6 +1239,7 @@ def test_load_settings_uses_project_data_dir(monkeypatch, tmp_path):
     monkeypatch.setenv(
         "PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}"
     )
+    monkeypatch.setenv("BOT_SENDER_ALLOWLIST", "")
 
     settings = app.bridge_settings.load_settings()
 
@@ -1221,7 +1268,7 @@ def test_hermes_task_runs_direct_subprocess(monkeypatch, tmp_path):
     class FakeProcess:
         returncode = 0
 
-        async def communicate(self):
+        async def communicate(self, input=None):
             return b'{"action":"notify","executed_task":true,"owner_report":"done"}', b""
 
     async def fake_create_subprocess_exec(*args, **kwargs):
@@ -1400,7 +1447,7 @@ def test_mcp_draft_returns_verbatim_inline_preview(monkeypatch, tmp_path):
     assert "Return assistant_response to the user verbatim" in result[
         "assistant_response_instruction"
     ]
-    assert result["display"] == result["assistant_response"]
+    assert "display" not in result
     assert result["metadata"]["to"] == ["recipient@example.com"]
     assert result["metadata"]["subject"] == "Hello"
 
@@ -2035,7 +2082,9 @@ def test_mcp_history_tools_use_mailbox_store(monkeypatch, tmp_path):
     assert searched["items"][0]["subject"] == "Hello MCP"
     assert listed["mailbox"] == "inbox"
     assert listed["items"][0]["subject"] == "Hello MCP"
-    assert "收件箱" in listed["display"]
+    assert "display" not in listed
+    assert "assistant_response" not in listed
+    assert "Markdown" in listed["hermes_assistant_instruction"]
     assert viewed["text_body"] == "Searchable body"
 
 

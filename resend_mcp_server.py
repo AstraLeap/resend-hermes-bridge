@@ -49,6 +49,15 @@ OWNER_FROM_LOCAL = (
 
 mcp = FastMCP(MCP_DISPLAY_NAME)
 
+MARKDOWN_RESULT_INSTRUCTION = (
+    "When replying to the user from this tool result, present the relevant "
+    "information in Markdown. Prefer Markdown tables for email lists, search "
+    "results, and label lists. Use concise sections or bullets for a single "
+    "email detail. Preserve message_id, draft_id, labels, and external IDs "
+    "exactly, formatting identifiers in backticks. Do not expose internal "
+    "database paths unless the user explicitly asks for implementation details."
+)
+
 
 def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
@@ -61,6 +70,18 @@ def _require_user_chat_context() -> None:
             f"{MCP_SERVER_NAME} MCP is disabled for automated tool sessions; "
             "use it only from a user chat session"
         )
+
+
+def _with_markdown_result_instruction(result: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        key: value
+        for key, value in result.items()
+        if key not in {"display", "assistant_response"}
+    }
+    return {
+        "hermes_assistant_instruction": MARKDOWN_RESULT_INSTRUCTION,
+        **payload,
+    }
 
 
 def _parse_iso(value: Any) -> datetime | None:
@@ -364,7 +385,6 @@ def _draft_preview_response(
         "status": "drafted",
         "draft_id": draft_id,
         "assistant_response": confirmation_markdown,
-        "display": confirmation_markdown,
         "assistant_response_instruction": (
             "Return assistant_response to the user verbatim as your complete final "
             "message. Do not add, remove, summarize, translate, reformat, wrap in a "
@@ -543,7 +563,6 @@ async def send_email(
     return {
         "status": "sent",
         "assistant_response": _sent_notification(result),
-        "display": _sent_notification(result),
         "bridge_response": result,
     }
 
@@ -567,14 +586,16 @@ async def list_emails(
     deleted messages.
     """
     _require_user_chat_context()
-    return mailbox_store.list_mailbox(
-        db_path=STATE_DB_FILE,
-        mailbox=mailbox,
-        label=label,
-        status=status,
-        limit=limit,
-        offset=offset,
-        include_deleted=include_deleted,
+    return _with_markdown_result_instruction(
+        mailbox_store.list_mailbox(
+            db_path=STATE_DB_FILE,
+            mailbox=mailbox,
+            label=label,
+            status=status,
+            limit=limit,
+            offset=offset,
+            include_deleted=include_deleted,
+        )
     )
 
 
@@ -598,15 +619,17 @@ async def search_emails(
     are not allowed to use it.
     """
     _require_user_chat_context()
-    return mailbox_store.search_mailbox(
-        db_path=STATE_DB_FILE,
-        query=query,
-        label=label,
-        direction=direction,
-        status=status,
-        limit=limit,
-        offset=offset,
-        include_deleted=include_deleted,
+    return _with_markdown_result_instruction(
+        mailbox_store.search_mailbox(
+            db_path=STATE_DB_FILE,
+            query=query,
+            label=label,
+            direction=direction,
+            status=status,
+            limit=limit,
+            offset=offset,
+            include_deleted=include_deleted,
+        )
     )
 
 
@@ -623,11 +646,13 @@ async def view_email(
     outbound_messages id returned by search_emails.
     """
     _require_user_chat_context()
-    return mailbox_store.get_mailbox_email(
-        db_path=STATE_DB_FILE,
-        kind=kind,
-        message_id=message_id,
-        body_limit=body_limit,
+    return _with_markdown_result_instruction(
+        mailbox_store.get_mailbox_email(
+            db_path=STATE_DB_FILE,
+            kind=kind,
+            message_id=message_id,
+            body_limit=body_limit,
+        )
     )
 
 
@@ -645,12 +670,14 @@ async def delete_email(
     previously deleted message.
     """
     _require_user_chat_context()
-    return mailbox_store.delete_mailbox_email(
-        db_path=STATE_DB_FILE,
-        kind=kind,
-        message_id=message_id,
-        reason=reason,
-        restore=restore,
+    return _with_markdown_result_instruction(
+        mailbox_store.delete_mailbox_email(
+            db_path=STATE_DB_FILE,
+            kind=kind,
+            message_id=message_id,
+            reason=reason,
+            restore=restore,
+        )
     )
 
 
@@ -669,13 +696,15 @@ async def manage_email_labels(
     database.
     """
     _require_user_chat_context()
-    return mailbox_store.update_mailbox_labels(
-        db_path=STATE_DB_FILE,
-        kind=kind,
-        message_id=message_id,
-        add_labels=add_labels,
-        remove_labels=remove_labels,
-        set_labels=set_labels,
+    return _with_markdown_result_instruction(
+        mailbox_store.update_mailbox_labels(
+            db_path=STATE_DB_FILE,
+            kind=kind,
+            message_id=message_id,
+            add_labels=add_labels,
+            remove_labels=remove_labels,
+            set_labels=set_labels,
+        )
     )
 
 
@@ -683,10 +712,12 @@ async def manage_email_labels(
 async def list_email_labels(query: str = "", limit: int = 100) -> dict[str, Any]:
     """List labels currently used in local email history."""
     _require_user_chat_context()
-    return mailbox_store.list_mailbox_labels(
-        db_path=STATE_DB_FILE,
-        query=query,
-        limit=limit,
+    return _with_markdown_result_instruction(
+        mailbox_store.list_mailbox_labels(
+            db_path=STATE_DB_FILE,
+            query=query,
+            limit=limit,
+        )
     )
 
 
