@@ -61,7 +61,7 @@ Set up the email side in Resend first:
 
 ## Nginx forwarding
 
-Enter your public endpoint in Resend Webhooks, then forward it on your server to the local fixed port:
+Forward your Resend Webhooks endpoint through Nginx to the local fixed port:
 
 ```text
 https://your-domain.example/your-resend-endpoint
