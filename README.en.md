@@ -12,8 +12,6 @@ It does three things:
 
 Hermes decides what to do, but the bridge handles external delivery. This keeps webhook signature verification, attachment persistence, Resend sending, draft confirmation, audit logging, and recovery logic in one boundary.
 
-This project is not a hosted email service or webmail. It binds to `127.0.0.1` by default and only the Resend webhook path should be exposed through a reverse proxy. The MCP server registered in Hermes is named `resend_email`.
-
 ## Preview
 
 | Telegram | QQ |
