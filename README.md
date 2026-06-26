@@ -197,14 +197,6 @@ systemctl --user enable --now resend-hermes-bridge.service
 journalctl --user -u resend-hermes-bridge.service -f
 ```
 
-## 安全注意
-
-- `.env` 和 `data/` 都可能包含敏感信息，不要提交。
-- 公网 Webhook 入口只转发到本地 `/webhooks/resend`，且必须让签名校验继续生效。
-- `/send` 和 `/show-draft` 没有设计成公网认证 API，只能放在本机或可信内网。
-- Hermes 处理邮件时使用 `--yolo`。邮件正文和附件都是不可信输入，不要在高权限账户或不受控主机上运行。
-- 不要让反向代理把整个 `127.0.0.1:8765` 暴露出去。
-
 ## 友情社区
 
 - [linux.do](https://linux.do/)

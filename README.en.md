@@ -197,14 +197,6 @@ View service logs:
 journalctl --user -u resend-hermes-bridge.service -f
 ```
 
-## Security notes
-
-- `.env` and `data/` may contain sensitive information; do not commit them.
-- Expose only the `/webhooks/resend` path to the internet and keep signature verification enabled.
-- `/send` and `/show-draft` are not designed as public authenticated APIs; keep them on localhost or a trusted internal network.
-- Hermes processes email with `--yolo`. Email bodies and attachments are untrusted input; do not run under a high-privilege account or on an untrusted host.
-- Do not let the reverse proxy expose the entire `127.0.0.1:8765` endpoint.
-
 ## Community
 
 - [linux.do](https://linux.do/)
