@@ -61,7 +61,7 @@ Resend outbound email
 
 ## Nginx 转发
 
-在将你的 Resend Webhooks Endpoint 用 Nginx 转发到本地固定接口：
+将你的 Resend Webhooks Endpoint 用 Nginx 转发到本地固定接口：
 
 ```text
 https://your-domain.example/your-resend-endpoint
