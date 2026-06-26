@@ -12,15 +12,13 @@ It does three things:
 
 Hermes decides what to do, but the bridge handles external delivery. This keeps webhook signature verification, attachment persistence, Resend sending, draft confirmation, audit logging, and recovery logic in one boundary.
 
-## Use cases
-
-- You already have Hermes installed and configured locally.
-- You have a verified Resend sending domain.
-- You want addresses like `bot@example.com` to become an email entry point for your local Hermes.
-- You want Hermes to create email drafts via MCP, but require confirmation before anything is actually sent.
-- You want local SQLite audit records for all emails, notifications, attachments, and processing steps.
-
 This project is not a hosted email service or webmail. It binds to `127.0.0.1` by default and only the Resend webhook path should be exposed through a reverse proxy. The MCP server registered in Hermes is named `resend_email`.
+
+## Preview
+
+| Telegram | QQ |
+|:--------:|:--:|
+| ![tg_view](pics/tg_view.jpg) | ![qq_view](pics/qq_view.jpg) |
 
 ## Architecture overview
 
