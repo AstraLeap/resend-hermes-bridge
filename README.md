@@ -123,6 +123,13 @@ systemctl --user enable --now resend-hermes-bridge.service
 
 ## 运维命令
 
+修改 `.env` 配置后，需要重启本项目和 Hermes Gateway 服务才能生效：
+
+```sh
+systemctl --user restart resend-hermes-bridge.service
+hermes gateway restart
+```
+
 查看数据库健康状态：
 
 ```sh

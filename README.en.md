@@ -122,6 +122,13 @@ Replace `/path/to/resend-hermes-bridge` and user paths in the template with actu
 
 ## Operations commands
 
+After changing `.env`, restart both this service and the Hermes Gateway for the changes to take effect:
+
+```sh
+systemctl --user restart resend-hermes-bridge.service
+hermes gateway restart
+```
+
 Check database health:
 
 ```sh
