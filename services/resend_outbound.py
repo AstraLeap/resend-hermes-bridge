@@ -18,6 +18,7 @@ from utils.email_core import (
     ensure_list,
     outbound_recipient_summary,
 )
+from utils.i18n_strings import McpMessages, ReplyMessages
 
 
 class _BridgeAppProxy:
@@ -376,7 +377,7 @@ def build_resend_reply_payload(
     if subject and not subject.lower().startswith("re:"):
         subject = f"Re: {subject}"
     if not subject:
-        subject = "Re: your email"
+        subject = ReplyMessages.DEFAULT_REPLY_SUBJECT
 
     message_id = str(email.get("message_id") or "").strip()
     references = str((email.get("headers") or {}).get("references") or "").strip()
@@ -433,7 +434,7 @@ def reply_attachment_specs_from_decision(
     def append_owner_report_note() -> None:
         if not skipped:
             return
-        note = "自动回复时跳过了无效附件：" + "；".join(skipped)
+        note = McpMessages.SKIP_ATTACHMENT_PREFIX + McpMessages.SKIP_ATTACHMENT_SEPARATOR.join(skipped)
         owner_report = str(decision.get("owner_report") or "").strip()
         if note not in owner_report:
             decision["owner_report"] = f"{owner_report}\n\n{note}".strip()
@@ -453,10 +454,10 @@ def reply_attachment_specs_from_decision(
             bridge_app._path_is_relative_to(path, root)
             for root in bridge_app.GENERATED_ATTACHMENT_ROOTS
         ):
-            append_skip(raw_path, "outside generated attachment directories")
+            append_skip(raw_path, McpMessages.OUTSIDE_GENERATED_DIRS)
             return
         if not path.is_file():
-            append_skip(raw_path, "not found")
+            append_skip(raw_path, McpMessages.NOT_FOUND)
             return
         key = str(path)
         if key in seen_paths:
@@ -476,7 +477,7 @@ def reply_attachment_specs_from_decision(
         if not path or path in seen_paths:
             return
         if not Path(path).expanduser().is_file():
-            append_skip(path, "downloaded file not found")
+            append_skip(path, McpMessages.DOWNLOADED_NOT_FOUND)
             return
         spec: dict[str, Any] = {"path": path}
         if item.get("filename"):

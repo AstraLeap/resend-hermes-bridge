@@ -1,5 +1,7 @@
 # Resend Hermes Bridge
 
+中文 | [English](README.en.md)
+
 Resend Hermes Bridge 是一个运行在本机的 FastAPI 桥接服务，用来把 Resend Inbound Email 接入本地 Hermes 运行时。
 
 它做三件事：

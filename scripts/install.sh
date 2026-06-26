@@ -136,6 +136,34 @@ prompt() {
   set_env_value "$key" "$value"
 }
 
+prompt_language() {
+  local current
+  current="$(read_env_value "BRIDGE_LANGUAGE" "zh")"
+  if [[ -z "$current" ]]; then
+    current="zh"
+  fi
+
+  info "Select bridge language / 选择桥接服务语言 (current: $current):"
+  info "  1) 中文 (zh)"
+  info "  2) English (en)"
+  local choice=""
+  read -rp "Enter 1 or 2 [default: 1]: " choice
+  case "$choice" in
+    2 | en | En | EN | english | English)
+      set_env_value "BRIDGE_LANGUAGE" "en"
+      ok "Using English"
+      ;;
+    1 | zh | Zh | ZH | chinese | 中文 | "")
+      set_env_value "BRIDGE_LANGUAGE" "zh"
+      ok "使用中文 / Using Chinese"
+      ;;
+    *)
+      warn "Unknown choice '$choice', defaulting to Chinese"
+      set_env_value "BRIDGE_LANGUAGE" "zh"
+      ;;
+  esac
+}
+
 restart_hermes_gateway() {
   if "$HERMES_FOUND" gateway restart >/dev/null 2>&1; then
     ok "Hermes Gateway restarted"
@@ -240,6 +268,7 @@ prompt "AI_NAME" "Display name for owner notices" "Hermes"
 prompt "RESEND_BRIDGE_PORT" "Resend bridge local port" "8765"
 prompt "BOT_SENDER_ALLOWLIST" "Bot sender allowlist, comma-separated (blank allows all)" ""
 prompt "NOTIFICATION_TARGET" "Notification platform (telegram/weixin/qqbot/wecom/discord/slack/signal)" "telegram"
+prompt_language
 
 info "Installing resend-hermes-bridge systemd user service..."
 mkdir -p "$HOME/.config/systemd/user"

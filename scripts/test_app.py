@@ -14,6 +14,13 @@ import pytest
 import app
 import routers.send as send_router
 from scripts import manage
+from utils.i18n_strings import (
+    EmailLabels,
+    MailboxLabels,
+    McpMessages,
+    NotificationTitles,
+    ProcessingMessages,
+)
 
 
 class _DummyFastMCP:
@@ -195,7 +202,7 @@ def test_activity_summary_mentions_execution_and_optional_reply():
         },
     )
 
-    assert "**任务总结：**" in summary
+    assert ProcessingMessages.ACTIVITY_SUMMARY_PREFIX in summary
     assert "北京今天晴" in summary
     assert "已收到并展示" not in summary
     assert "Hermes 判断" not in summary
@@ -243,7 +250,7 @@ def test_non_bot_email_notice_uses_owner_title_without_routing_labels(monkeypatc
     assert messages
     assert "收到非 bot 邮件" not in messages[0]
     assert "邮件不是发给" not in messages[0]
-    assert messages[0].startswith("主人你有一封新邮件~")
+    assert messages[0].startswith(NotificationTitles.NON_BOT_EMAIL)
     assert sent_attachment_paths == [[]]
     assert statuses == [("email-1", "notified", None)]
 
@@ -291,7 +298,7 @@ def test_non_bot_email_notice_sends_downloaded_attachment_paths(monkeypatch):
     )
 
     assert len(notifications) == 1
-    assert notifications[0]["message"].startswith("主人你有一封新邮件~")
+    assert notifications[0]["message"].startswith(NotificationTitles.NON_BOT_EMAIL)
     assert notifications[0]["email_id"] == "email-1"
     assert notifications[0]["attachment_paths"] == ["/tmp/image.jpg"]
 
@@ -329,15 +336,15 @@ def test_qqbot_notification_target_uses_markdown_table_template(monkeypatch):
     )
 
     assert messages
-    assert "| 字段 | 内容 |" in messages[0]
-    assert "| 文件 | 大小 |" in messages[0]
-    assert "| From | sender@example.com |" in messages[0]
-    assert "| To | owner@example.com |" in messages[0]
+    assert f"| {EmailLabels.FIELD} | {EmailLabels.CONTENT} |" in messages[0]
+    assert f"| {EmailLabels.FILE} | {EmailLabels.SIZE} |" in messages[0]
+    assert f"| {EmailLabels.FROM} | sender@example.com |" in messages[0]
+    assert f"| {EmailLabels.TO} | owner@example.com |" in messages[0]
     assert "**邮件信息**" not in messages[0]
     assert "**正文**" in messages[0]
     assert "\n**正文**\n\n> Body\n" in messages[0]
     assert "```text" not in messages[0]
-    assert "**附件**" in messages[0]
+    assert f"**{EmailLabels.ATTACHMENTS}**" in messages[0]
     assert "| report.pdf | 12 |" in messages[0]
 
 
@@ -379,7 +386,7 @@ def test_bot_email_notice_uses_kabao_title(monkeypatch):
     )
 
     assert messages
-    assert messages[0].startswith("卡宝收到邮件啦！正在处理中哦~")
+    assert messages[0].startswith(NotificationTitles.BOT_EMAIL_RECEIVED.format(ai_name="卡宝"))
     assert "收到发给" not in messages[0]
     assert sent_attachment_paths == [[]]
     assert statuses == [("email-1", "processing", None)]
@@ -418,7 +425,7 @@ def test_bot_email_notice_ignores_custom_title_env(monkeypatch):
         )
     )
 
-    assert messages[0].startswith("Hermes收到邮件啦！正在处理中哦~")
+    assert messages[0].startswith(NotificationTitles.BOT_EMAIL_RECEIVED.format(ai_name="Hermes"))
     assert "不应该生效" not in messages[0]
 
 
@@ -458,8 +465,10 @@ def test_bot_email_from_non_allowlisted_sender_forwards_to_owner(monkeypatch):
             "to": [app.SETTINGS.inbound_address],
         }, [], True
 
-    async def fake_notify_non_bot(email_id, email, attachments, reason=None):
-        calls.append((email_id, email["from"], attachments, reason))
+    async def fake_notify_non_bot(
+        email_id, email, attachments, reason=None, title=None
+    ):
+        calls.append((email_id, email["from"], attachments, reason, title))
 
     async def fail_notify_bot(*_args, **_kwargs):
         raise AssertionError("bot notification should not run")
@@ -489,6 +498,9 @@ def test_bot_email_from_non_allowlisted_sender_forwards_to_owner(monkeypatch):
             "blocked@example.com",
             [],
             "sender is not in BOT_SENDER_ALLOWLIST",
+            NotificationTitles.WHITELIST_FORWARD.format(
+                ai_name=app.SETTINGS.ai_name
+            ),
         )
     ]
 
@@ -534,7 +546,7 @@ def test_send_notification_uses_telegram_adapter_by_default(monkeypatch, tmp_pat
     updates = []
     steps = []
     context_calls = []
-    message = "| 字段 | 内容 |\n| --- | --- |\n| From | sender@example.com |"
+    message = "| {EmailLabels.FIELD} | {EmailLabels.CONTENT} |\n| --- | --- |\n| From | sender@example.com |"
     hermes_bin = tmp_path / "hermes"
     hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
     hermes_bin.chmod(0o755)
@@ -674,7 +686,7 @@ def test_email_notice_decodes_html_entities_in_text_body():
 
     assert "> A > B\n> C < D" in notice
     assert "A &gt; B\nC &lt; D" not in notice
-    assert "| Subject | A > B |" in notice
+    assert f"| {EmailLabels.SUBJECT} | A > B |" in notice
 
 
 def test_email_notice_decodes_html_entities_in_html_body():
@@ -742,7 +754,7 @@ def test_send_email_display_notification_renders_markdown_and_forwards_target(mo
                 "subject": "Hello",
                 "text": "Hi",
             },
-            title="请确认是否发送以下邮件：",
+            title=NotificationTitles.DRAFT_CONFIRMATION,
             domain="example.com",
             draft_id="draft-1",
             footer="确认后发送。",
@@ -753,9 +765,9 @@ def test_send_email_display_notification_renders_markdown_and_forwards_target(mo
     )
 
     assert captured["message"] == notice
-    assert "| 字段 | 内容 |" in notice
+    assert f"| {EmailLabels.FIELD} | {EmailLabels.CONTENT} |" in notice
     assert "| Draft ID | draft-1 |" in notice
-    assert "| To | recipient@example.com |" in notice
+    assert f"| {EmailLabels.TO} | recipient@example.com |" in notice
     assert "\n**正文**\n\n> Hi\n" in notice
     assert "```text" not in notice
     assert "确认后发送。" in notice
@@ -768,7 +780,7 @@ def test_send_notification_uses_hermes_send_for_non_telegram(monkeypatch, tmp_pa
     commands = []
     updates = []
     steps = []
-    message = "| 字段 | 内容 |\n| --- | --- |\n| From | sender@example.com |"
+    message = "| {EmailLabels.FIELD} | {EmailLabels.CONTENT} |\n| --- | --- |\n| From | sender@example.com |"
     hermes_bin = tmp_path / "hermes"
     hermes_bin.write_text("#!/bin/sh\n", encoding="utf-8")
     hermes_bin.chmod(0o755)
@@ -1164,7 +1176,7 @@ def test_reply_notice_shows_only_sent_email_without_summary_footer():
         reply_id="reply-123",
     )
 
-    assert "Hermes 已自动回复：" in notice
+    assert NotificationTitles.AUTO_REPLY_SENT in notice
     assert "处理结果" not in notice
     assert "决策原因" not in notice
     assert "Hermes 汇报" not in notice
@@ -1185,10 +1197,13 @@ def test_hermes_task_prompt_requires_owner_report_even_with_reply():
         }
     )
 
-    assert "无论是否还要给发件人回邮件，都必须填写 owner_report" in prompt
-    assert "- owner_report: 必填" in prompt
-    assert "邮件主人" in prompt
-    assert "给主人看" in prompt
+    assert (
+        "Whether or not you reply to the sender, you must fill in owner_report"
+        in prompt
+    )
+    assert "- owner_report: required" in prompt
+    assert "the owner" in prompt
+    assert "shown to the owner" in prompt
 
 
 def test_hermes_task_prompt_is_loaded_from_template():
@@ -1202,7 +1217,7 @@ def test_hermes_task_prompt_is_loaded_from_template():
         }
     )
 
-    assert "返回严格 JSON" in prompt
+    assert "Return strict JSON" in prompt
     assert "{prompt_record_json}" not in prompt
 
 
@@ -1217,13 +1232,13 @@ def test_hermes_task_prompt_keeps_bridge_as_delivery_owner():
         }
     )
 
-    assert "不要自己调用 send_email" in prompt
+    assert "Do not call send_email" in prompt
     assert "owner_report" in prompt
-    assert "第一人称“我/我们/我的”默认指 `sender`" in prompt
-    assert "设置 action=reply" in prompt
+    assert "refer to `sender`" in prompt
+    assert "set action=reply" in prompt
     assert "forward_received_attachments" not in prompt
-    assert "通知端（如 Telegram）" in prompt
-    assert "不要编造不存在的路径" in prompt
+    assert "notification endpoint (e.g., Telegram)" in prompt
+    assert "do not fabricate non-existent paths" in prompt
 
 def test_load_settings_uses_project_data_dir(monkeypatch, tmp_path):
     hermes_bin = tmp_path / "hermes"
@@ -1440,9 +1455,9 @@ def test_mcp_draft_returns_verbatim_inline_preview(monkeypatch, tmp_path):
 
     assert result["status"] == "drafted"
     assert result["preview_delivered"] is False
-    assert "| 字段 | 内容 |" in result["assistant_response"]
-    assert "| To | recipient@example.com |" in result["assistant_response"]
-    assert "| Subject | Hello |" in result["assistant_response"]
+    assert f"| {EmailLabels.FIELD} | {EmailLabels.CONTENT} |" in result["assistant_response"]
+    assert f"| {EmailLabels.TO} | recipient@example.com |" in result["assistant_response"]
+    assert f"| {EmailLabels.SUBJECT} | Hello |" in result["assistant_response"]
     assert "**邮件信息**" not in result["assistant_response"]
     assert "Return assistant_response to the user verbatim" in result[
         "assistant_response_instruction"
@@ -1476,7 +1491,7 @@ def test_mcp_revision_creates_new_draft_and_links_previous(monkeypatch, tmp_path
     )
 
     assert second["draft_id"] != first["draft_id"]
-    assert "| Subject | Revised |" in second["assistant_response"]
+    assert f"| {EmailLabels.SUBJECT} | Revised |" in second["assistant_response"]
     data = json.loads(drafts_file.read_text(encoding="utf-8"))
     assert data[second["draft_id"]]["revision_of"] == first["draft_id"]
     assert second["draft_id"] in data[first["draft_id"]]["revisions"]
@@ -1778,7 +1793,7 @@ def test_show_draft_endpoint_renders_and_notifies(monkeypatch, tmp_path):
                 {
                     "payload": payload,
                     "draft_id": "draft-1",
-                    "title": "请确认是否发送以下邮件：",
+                    "title": NotificationTitles.DRAFT_CONFIRMATION,
                     "footer": "确认后发送。",
                 }
             )
@@ -1786,8 +1801,8 @@ def test_show_draft_endpoint_renders_and_notifies(monkeypatch, tmp_path):
     )
 
     assert response["ok"] is True
-    assert "请确认是否发送以下邮件：" in captured["message"]
-    assert "| 字段 | 内容 |" in captured["message"]
+    assert NotificationTitles.DRAFT_CONFIRMATION in captured["message"]
+    assert f"| {EmailLabels.FIELD} | {EmailLabels.CONTENT} |" in captured["message"]
     assert "Draft ID" in captured["message"]
     assert "确认后发送。" in captured["message"]
     assert captured["email_id"] is None
@@ -1824,7 +1839,7 @@ def test_show_draft_endpoint_uses_markdown_table_template_for_qqbot(monkeypatch,
                 {
                     "payload": payload,
                     "draft_id": "draft-1",
-                    "title": "请确认是否发送以下邮件：",
+                    "title": NotificationTitles.DRAFT_CONFIRMATION,
                     "footer": "确认后发送。",
                     "target": "qqbot:dm:user-1",
                 }
@@ -1833,9 +1848,9 @@ def test_show_draft_endpoint_uses_markdown_table_template_for_qqbot(monkeypatch,
     )
 
     assert response["ok"] is True
-    assert "| 字段 | 内容 |" in captured["message"]
+    assert f"| {EmailLabels.FIELD} | {EmailLabels.CONTENT} |" in captured["message"]
     assert "| Draft ID | draft-1 |" in captured["message"]
-    assert "| To | recipient@example.com |" in captured["message"]
+    assert f"| {EmailLabels.TO} | recipient@example.com |" in captured["message"]
     assert "**邮件信息**" not in captured["message"]
     assert "\n**正文**\n\n> Hi\n" in captured["message"]
     assert "```text" not in captured["message"]
@@ -2020,7 +2035,7 @@ def test_mailbox_store_list_mailbox_sorts_pages_and_aliases(monkeypatch, tmp_pat
         "Mid inbox",
     ]
     assert "_search_text" not in first_page["items"][0]
-    assert "按最新时间排序" in first_page["display"]
+    assert MailboxLabels.SORT_DESC in first_page["display"]
 
     second_page = mailbox_store.list_mailbox(
         db_path=db_path,
@@ -2379,7 +2394,7 @@ def test_auto_reply_skips_missing_text_attachment(monkeypatch, tmp_path):
 
     assert not attachment.exists()
     assert "attachments" not in payload
-    assert "自动回复时跳过了无效附件" in decision["owner_report"]
+    assert McpMessages.SKIP_ATTACHMENT_PREFIX in decision["owner_report"]
     assert str(attachment) in decision["owner_report"]
 
 
@@ -2409,7 +2424,7 @@ def test_auto_reply_skips_invalid_generated_attachment(monkeypatch, tmp_path):
         app.GENERATED_ATTACHMENT_ROOTS = original_generated_roots
 
     assert "attachments" not in payload
-    assert "自动回复时跳过了无效附件" in decision["owner_report"]
+    assert McpMessages.SKIP_ATTACHMENT_PREFIX in decision["owner_report"]
     assert str(missing_image) in decision["owner_report"]
 
 

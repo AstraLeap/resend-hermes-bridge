@@ -103,7 +103,6 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 LOGGER = logging.getLogger("resend-hermes-bridge")
-NOTIFICATION_BOT_TITLE = "{AI_NAME}收到邮件啦！正在处理中哦~"
 
 
 def exception_message(exc: Exception) -> str:

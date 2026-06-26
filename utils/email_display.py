@@ -6,6 +6,8 @@ from html import unescape
 from pathlib import Path
 from typing import Any
 
+from utils.i18n_strings import EmailLabels, MailboxLabels, NotificationTitles, ProcessingMessages
+
 HTML_BREAK_RE = re.compile(r"(?i)<\s*(br|/p|/div|/li|/tr)\b[^>]*>")
 HTML_SCRIPT_STYLE_RE = re.compile(r"(?is)<\s*(script|style)\b.*?<\s*/\s*\1\s*>")
 HTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -98,20 +100,24 @@ def email_display_rows(
 ) -> list[tuple[str, str]]:
     rows: list[tuple[str, str]] = []
     if draft_id:
-        rows.append(("Draft ID", draft_id))
+        rows.append((EmailLabels.DRAFT_ID, draft_id))
     if email_id:
-        rows.append(("Email ID", email_id))
+        rows.append((EmailLabels.EMAIL_ID, email_id))
     rows.extend(
         [
-            ("From", format_sender(payload, domain=domain)),
-            ("To", join_addresses(payload.get("to"))),
+            (EmailLabels.FROM, format_sender(payload, domain=domain)),
+            (EmailLabels.TO, join_addresses(payload.get("to"))),
         ]
     )
-    for key, label in (("cc", "CC"), ("bcc", "BCC"), ("reply_to", "Reply-To")):
+    for key, label in (
+        ("cc", EmailLabels.CC),
+        ("bcc", EmailLabels.BCC),
+        ("reply_to", EmailLabels.REPLY_TO),
+    ):
         joined = join_addresses(payload.get(key))
         if joined:
             rows.append((label, joined))
-    rows.append(("Subject", str(payload.get("subject") or "")))
+    rows.append((EmailLabels.SUBJECT, str(payload.get("subject") or "")))
     return rows
 
 
@@ -119,16 +125,16 @@ def email_body_block(payload: dict[str, Any], *, body_limit: int | None = None) 
     text = str(payload.get("text") or "").strip()
     html = str(payload.get("html") or "").strip()
     if text:
-        label = "正文"
+        label = EmailLabels.BODY
         body = text
     elif html:
-        label = "HTML 正文"
-        body = html_to_display_text(html) or "(空)"
+        label = EmailLabels.HTML_BODY
+        body = html_to_display_text(html) or EmailLabels.EMPTY_BODY
     else:
-        label = "正文"
-        body = "(空)"
+        label = EmailLabels.BODY
+        body = EmailLabels.EMPTY_BODY
     if body_limit is not None and len(body) > body_limit:
-        body = body[:body_limit] + "\n...[truncated]"
+        body = body[:body_limit] + ProcessingMessages.TRUNCATED
     return label, body
 
 
@@ -149,7 +155,7 @@ def render_attachments_markdown(
         return []
     lines = [
         "",
-        "**附件**",
+        f"**{EmailLabels.ATTACHMENTS}**",
         "",
     ]
     rows: list[list[str]] = []
@@ -158,8 +164,13 @@ def render_attachments_markdown(
         size = attachment_display_size(attachment)
         rows.append([filename, size])
     if len(attachments) > 12:
-        rows.append(["...", f"还有 {len(attachments) - 12} 个附件"])
-    lines.extend(render_markdown_table(["文件", "大小"], rows))
+        rows.append(
+            [
+                "...",
+                EmailLabels.MORE_ATTACHMENTS.format(count=len(attachments) - 12),
+            ]
+        )
+    lines.extend(render_markdown_table([EmailLabels.FILE, EmailLabels.SIZE], rows))
     return lines
 
 
@@ -217,7 +228,7 @@ def render_email_markdown(
             email_id=email_id,
         )
     ]
-    lines.extend(render_markdown_table(["字段", "内容"], rows))
+    lines.extend(render_markdown_table([EmailLabels.FIELD, EmailLabels.CONTENT], rows))
 
     body_label, body = email_body_block(payload, body_limit=body_limit)
     body = decode_html_entities(body).replace("```", "'''")
@@ -265,7 +276,7 @@ def inbound_email_payload(email: dict[str, Any]) -> dict[str, Any]:
         "to": email.get("to"),
         "cc": email.get("cc"),
         "bcc": email.get("bcc"),
-        "subject": email.get("subject") or "(no subject)",
+        "subject": email.get("subject") or MailboxLabels.NO_SUBJECT,
         "text": email.get("text") or "",
         "html": email.get("html") or "",
     }
@@ -307,10 +318,10 @@ def render_processing_result_notice(
     show_attachments: bool = True,
 ) -> str:
     if reply_payload:
-        footer = f"Resend ID: `{reply_id}`" if reply_id else None
+        footer = ProcessingMessages.REPLY_FOOTER.format(reply_id=reply_id) if reply_id else None
         notice = render_email_markdown(
             reply_payload,
-            title="Hermes 已自动回复：",
+            title=NotificationTitles.AUTO_REPLY_SENT,
             domain=domain,
             footer=footer,
             notice_limit=notice_limit,
@@ -328,16 +339,16 @@ def notice_footer(
     reply_id: str | None = None,
 ) -> str:
     sections = [
-        "**处理结果**",
+        ProcessingMessages.RESULT_SECTION,
         "",
         summary,
     ]
     if reply_id:
-        sections.extend(["", f"Resend ID: `{reply_id}`"])
+        sections.extend(["", ProcessingMessages.REPLY_FOOTER.format(reply_id=reply_id)])
     return "\n".join(sections)
 
 
 def truncate_notice(message: str, limit: int = 3800) -> str:
     if len(message) <= limit:
         return message
-    return message[: limit - 16].rstrip() + "\n...[truncated]"
+    return message[: limit - 16].rstrip() + ProcessingMessages.TRUNCATED

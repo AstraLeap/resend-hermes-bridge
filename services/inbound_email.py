@@ -15,6 +15,11 @@ from services.resend_outbound import (
     send_resend_reply,
 )
 from utils.email_display import html_to_display_text, inbound_email_payload
+from utils.i18n_strings import (
+    ErrorMessages,
+    NotificationTitles,
+    ProcessingMessages,
+)
 
 
 class _BridgeAppProxy:
@@ -287,6 +292,7 @@ async def notify_non_bot_email(
     email: dict[str, Any],
     attachments: list[dict[str, Any]],
     reason: str | None = None,
+    title: str | None = None,
 ) -> None:
     bridge_app.LOGGER.info(
         "email %s forwarded to %s: %s",
@@ -297,7 +303,7 @@ async def notify_non_bot_email(
     downloaded = await download_attachments_for_notification(email_id, attachments)
     await bridge_app.send_email_display_notification(
         inbound_email_payload(email),
-        title="主人你有一封新邮件~",
+        title=title or NotificationTitles.NON_BOT_EMAIL,
         domain=bridge_app.SETTINGS.resend_domain,
         email_id=email_id,
         attachments=attachments,
@@ -315,7 +321,9 @@ async def notify_bot_email_received(
 ) -> None:
     """Immediately show the original bot-addressed email before processing it."""
 
-    title = bridge_app.NOTIFICATION_BOT_TITLE.format(AI_NAME=bridge_app.SETTINGS.ai_name)
+    title = NotificationTitles.BOT_EMAIL_RECEIVED.format(
+        ai_name=bridge_app.SETTINGS.ai_name
+    )
     downloaded = await download_attachments_for_notification(email_id, attachments)
     await bridge_app.send_email_display_notification(
         inbound_email_payload(email),
@@ -369,7 +377,7 @@ async def handle_hermes_decision(
         decision["action"] = "notify"
         decision["owner_report"] = (
             str(decision.get("owner_report") or "").strip()
-            + " Hermes chose reply but did not provide a reply body, so the bridge skipped the email reply."
+            + " " + ProcessingMessages.REPLY_SKIPPED_NO_BODY
         ).strip()
         action = "notify"
     if action == "reply":
@@ -381,10 +389,10 @@ async def handle_hermes_decision(
             email_id=email_id,
             reply_payload=reply_payload,
         )
-        footer = f"Resend ID: `{reply_id}`" if reply_id else None
+        footer = ProcessingMessages.REPLY_FOOTER.format(reply_id=reply_id) if reply_id else None
         await bridge_app.send_email_display_notification(
             reply_payload,
-            title="Hermes 已自动回复：",
+            title=NotificationTitles.AUTO_REPLY_SENT,
             domain=bridge_app.SETTINGS.resend_domain,
             footer=footer,
             email_id=email_id,
@@ -420,6 +428,7 @@ async def process_event(event: dict[str, Any], svix_id: str) -> None:
             email_id,
             email,
             attachments,
+            title=NotificationTitles.NON_BOT_EMAIL,
             reason=f"not addressed to {bridge_app.SETTINGS.inbound_address}",
         )
         return
@@ -429,6 +438,9 @@ async def process_event(event: dict[str, Any], svix_id: str) -> None:
             email_id,
             email,
             attachments,
+            title=NotificationTitles.WHITELIST_FORWARD.format(
+                ai_name=bridge_app.SETTINGS.ai_name
+            ),
             reason="sender is not in BOT_SENDER_ALLOWLIST",
         )
         return
@@ -472,16 +484,17 @@ async def process_event_safe(event: dict[str, Any], svix_id: str) -> None:
             error=str(exc)[:1000],
         )
         await bridge_app.send_notification(
-            "Resend inbound processing failed.\n"
-            f"Email ID: {email_id or None}\n"
-            f"Error: {exc}",
+            ErrorMessages.INBOUND_PROCESSING_FAILED.format(
+                email_id=email_id or None, error=exc
+            ),
             email_id=email_id or None,
         )
 
 
 def build_activity_summary(decision: dict[str, Any]) -> str:
     owner_report = str(decision.get("owner_report") or "").strip()
-    return f"**任务总结：**\n\n{owner_report}" if owner_report else "**任务总结：**"
+    prefix = ProcessingMessages.ACTIVITY_SUMMARY_PREFIX
+    return f"{prefix}\n\n{owner_report}" if owner_report else prefix
 
 
 def email_summary(email: dict[str, Any]) -> dict[str, Any]:

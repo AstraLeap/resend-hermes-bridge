@@ -22,6 +22,7 @@ from utils.email_core import (
     parse_email_addresses,
 )
 from utils.email_display import html_to_display_text, render_draft_markdown
+from utils.i18n_strings import McpMessages, NotificationTitles
 
 
 def _require_env(name: str) -> str:
@@ -171,18 +172,18 @@ def _confirmation_markdown(
     return render_draft_markdown(
         draft_id,
         draft,
-        title="请确认是否发送以下邮件：",
+        title=NotificationTitles.DRAFT_CONFIRMATION,
         domain=FROM_DOMAIN,
-        footer=f"确认后我会发送 Draft ID `{draft_id}`。",
+        footer=McpMessages.DRAFT_FOOTER.format(draft_id=draft_id),
         show_attachments=False,
     )
 
 
 def _sent_notification(result: dict[str, Any]) -> str:
     resend_id = result.get("resend_id") or ""
-    parts = ["邮件已通过 Resend 发送。"]
+    parts = [McpMessages.SENT_NOTIFICATION]
     if resend_id:
-        parts.append(f"Resend ID: `{resend_id}`")
+        parts.append(McpMessages.RESEND_ID_PREFIX.format(resend_id=resend_id))
     return "\n".join(parts)
 
 

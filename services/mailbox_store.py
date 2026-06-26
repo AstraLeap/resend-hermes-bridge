@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from settings import APP_DIR
+from utils.i18n_strings import MailboxLabels
 
 STATE_DB_FILE = APP_DIR / "data" / "state.db"
 VALID_MESSAGE_KINDS = {"inbound", "outbound"}
@@ -46,10 +47,10 @@ MAILBOX_DIRECTIONS = {
     "trash": "all",
 }
 MAILBOX_TITLES = {
-    "all": "邮件列表",
-    "inbox": "收件箱",
-    "sent": "发件箱",
-    "trash": "回收站",
+    "all": MailboxLabels.ALL,
+    "inbox": MailboxLabels.INBOX,
+    "sent": MailboxLabels.SENT,
+    "trash": MailboxLabels.TRASH,
 }
 MAX_LABEL_LENGTH = 64
 MAX_SEARCH_LIMIT = 100
@@ -718,34 +719,46 @@ def _limit_text(value: Any, limit: int) -> str:
 
 
 def format_mailbox_listing(result: dict[str, Any]) -> str:
-    title = str(result.get("mailbox_title") or "邮件列表")
+    title = str(result.get("mailbox_title") or MailboxLabels.ALL)
     items = result.get("items") or []
     total = int(result.get("total") or 0)
     offset = int(result.get("offset") or 0)
     limit = int(result.get("limit") or 0)
     if not items:
-        return f"{title}：没有邮件。"
+        return MailboxLabels.NO_EMAILS_TEMPLATE.format(title=title)
 
     start = offset + 1
     end = offset + len(items)
-    lines = [f"{title}：显示 {start}-{end} / {total}，按最新时间排序。"]
+    lines = [
+        MailboxLabels.PAGING_TEMPLATE.format(
+            title=title,
+            start=start,
+            end=end,
+            total=total,
+            sort_desc=MailboxLabels.SORT_DESC,
+        )
+    ]
     for index, item in enumerate(items, start=start):
         lines.extend(_format_mailbox_item(index, item))
     if result.get("has_more"):
         next_offset = result.get("next_offset")
-        lines.append(f"继续查看请使用 offset={next_offset}, limit={limit}。")
+        lines.append(
+            MailboxLabels.CONTINUE_OFFSET_TEMPLATE.format(
+                offset=next_offset, limit=limit
+            )
+        )
     return "\n".join(lines)
 
 
 def _format_mailbox_item(index: int, item: dict[str, Any]) -> list[str]:
     kind = str(item.get("kind") or "")
-    direction = "收" if kind == "inbound" else "发"
+    direction = MailboxLabels.DIRECTION_IN if kind == "inbound" else MailboxLabels.DIRECTION_OUT
     timestamp = _one_line(item.get("timestamp") or item.get("received_at") or item.get("created_at"))
-    subject = _one_line(item.get("subject") or "(无主题)")
+    subject = _one_line(item.get("subject") or MailboxLabels.NO_SUBJECT)
     message_id = _markdown_code(item.get("message_id") or "")
     party = _format_party(item)
     status = _one_line(item.get("status") or "")
-    deleted = " 已删除" if item.get("deleted") else ""
+    deleted = MailboxLabels.DELETED_SUFFIX if item.get("deleted") else ""
     first_line = (
         f"{index}. [{direction}] {timestamp} {party} | {subject} | "
         f"status={status}{deleted} | id `{message_id}`"

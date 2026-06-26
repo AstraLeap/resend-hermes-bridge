@@ -7,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 import app as bridge_app
 from utils.email_core import ensure_list
+from utils.i18n_strings import NotificationTitles
 
 router = APIRouter()
 
@@ -87,7 +88,9 @@ async def show_draft(request: Request) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="payload must be an object")
     draft_id = str(raw.get("draft_id") or "").strip() or None
-    title = str(raw.get("title") or "请确认是否发送以下邮件：").strip()
+    title = str(
+        raw.get("title") or NotificationTitles.DRAFT_CONFIRMATION
+    ).strip()
     footer = str(raw.get("footer") or "").strip() or None
     target = _clean_optional_notification_target(raw.get("target"))
 
