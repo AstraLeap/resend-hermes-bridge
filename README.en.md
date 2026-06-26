@@ -168,6 +168,7 @@ journalctl --user -u resend-hermes-bridge.service -f
 ## Community
 
 - [linux.do](https://linux.do/)
+- [NodeSeek](https://www.nodeseek.com/)
 
 ## License
 

@@ -169,6 +169,7 @@ journalctl --user -u resend-hermes-bridge.service -f
 ## 友情社区
 
 - [linux.do](https://linux.do/)
+- [NodeSeek](https://www.nodeseek.com/)
 
 ## 许可证
 
